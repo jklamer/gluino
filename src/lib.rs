@@ -1,5 +1,4 @@
-pub fn change_data()
-{
+pub fn change_data() {
     println!("Today")
 }
 
