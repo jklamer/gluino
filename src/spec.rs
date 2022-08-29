@@ -77,7 +77,6 @@ const INT_3: u8 = 7;
 const SINGLE_FP: u8 = 8;
 const DOUBLE_FP: u8 = 9;
 
-
 impl Spec {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(128);
@@ -105,15 +104,23 @@ impl Spec {
             Spec::BinaryFloatingPoint(fmt) => match fmt {
                 InterchangeBinaryFloatingPointFormat::Single => out.push(SINGLE_FP),
                 InterchangeBinaryFloatingPointFormat::Double => out.push(DOUBLE_FP),
-                InterchangeBinaryFloatingPointFormat::Half => out.copy_from_slice(&[BINARY_FP, 0]), 
-                InterchangeBinaryFloatingPointFormat::Quadruple => out.copy_from_slice(&[BINARY_FP, 3]),
-                InterchangeBinaryFloatingPointFormat::Octuple => out.copy_from_slice(&[BINARY_FP, 4])
+                InterchangeBinaryFloatingPointFormat::Half => out.copy_from_slice(&[BINARY_FP, 0]),
+                InterchangeBinaryFloatingPointFormat::Quadruple => {
+                    out.copy_from_slice(&[BINARY_FP, 3])
+                }
+                InterchangeBinaryFloatingPointFormat::Octuple => {
+                    out.copy_from_slice(&[BINARY_FP, 4])
+                }
             },
-            Spec::DecimalFloatingPoint(fmt) => {
-                match fmt {
-                    InterchangeDecimalFloatingPointFormat::Dec32 => out.copy_from_slice(&[DECIMAL_FP, 0]),
-                    InterchangeDecimalFloatingPointFormat::Dec64 => out.copy_from_slice(&[DECIMAL_FP, 1]),
-                    InterchangeDecimalFloatingPointFormat::Dec128 => out.copy_from_slice(&[DECIMAL_FP, 2]),
+            Spec::DecimalFloatingPoint(fmt) => match fmt {
+                InterchangeDecimalFloatingPointFormat::Dec32 => {
+                    out.copy_from_slice(&[DECIMAL_FP, 0])
+                }
+                InterchangeDecimalFloatingPointFormat::Dec64 => {
+                    out.copy_from_slice(&[DECIMAL_FP, 1])
+                }
+                InterchangeDecimalFloatingPointFormat::Dec128 => {
+                    out.copy_from_slice(&[DECIMAL_FP, 2])
                 }
             },
             Spec::Decimal { scale, precision } => todo!(),

@@ -1,8 +1,9 @@
-use std::io::Read;
+use std::{
+    io::{self, Read},
+    mem::size_of,
+};
 
-
-
-pub fn variable_length_encode(mut z: u64, buffer: &mut Vec<u8>) {
+pub fn variable_length_encode(mut z: usize, buffer: &mut Vec<u8>) {
     loop {
         if z <= 0x7F {
             buffer.push((z & 0x7F) as u8);
@@ -13,32 +14,97 @@ pub fn variable_length_encode(mut z: u64, buffer: &mut Vec<u8>) {
         }
     }
 }
+const SYSTEM_SIZE: usize = size_of::<usize>();
+const MAX_SYSTEM_BYTES: usize = 16;
 
-pub fn variable_lenth_decode(buffer: &[u8]) -> Result<u64,VariableLengthDecodingError> {
-    let mut result = 0u64;
-    if buffer.len() > 9 {
-        Err(VariableLengthDecodingError::TooManyBytes)
-    } else {
-        for i in 0..buffer.len() {
-            let last_byte = i == (buffer.len() - 1);
-            let msb_1 = buffer[i] & 0x80 > 0;
-            if last_byte && msb_1 {
-                return Err(VariableLengthDecodingError::IncompleteVariableLengthEncoding)
-            }else if !last_byte && !msb_1 {
-                return Err(VariableLengthDecodingError::TooManyBytes)
+pub trait VariableLengthDecodingTarget {
+    const BYTE_LEN: usize;
+    fn from_le_bytes(b: &[u8]) -> Self;
+}
+
+macro_rules! gen_vldt_impls_nums {
+    ($($T:ty)+) => {
+        $(
+        impl VariableLengthDecodingTarget for $T {
+            const BYTE_LEN: usize = std::mem::size_of::<$T>();
+        
+            #[inline]
+            fn from_le_bytes(b: &[u8]) -> Self {
+                assert!(b.len() >= Self::BYTE_LEN);
+                let mut tmp : [u8; Self::BYTE_LEN] = [0; Self::BYTE_LEN];
+                tmp.copy_from_slice(&b[0..Self::BYTE_LEN]);
+                Self::from_le_bytes(tmp)
             }
-            result |= u64::from(buffer[i] & 0x7F) << i * 7
         }
-        Ok(result)
-    } 
+        )+
+    }
+}
+gen_vldt_impls_nums!(u8 u16 u32 u64 u128 usize);
+
+#[derive(Debug)]
+pub enum VariableLengthResult<B: VariableLengthDecodingTarget> {
+    Respresentable(B),
+    Unrepresentable(Vec<u8>), // litte indian arbitrary length unint
+}
+
+pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
+    input: &mut R,
+) -> Result<VariableLengthResult<B>, VariableLengthDecodingError> {
+    let mut read_buffer = [0u8; MAX_SYSTEM_BYTES];
+    let mut tracking_index = 0usize;
+    let mut overflow = Vec::<u8>::with_capacity(0);
+    let mut shift_offset = 0usize;
+    loop {
+        if tracking_index >= B::BYTE_LEN {
+            overflow.copy_from_slice(&read_buffer[0..(B::BYTE_LEN - 1)]);
+            tracking_index = 1;
+            read_buffer[0] = read_buffer[B::BYTE_LEN - 1];
+        }
+        let read_result = input.read_exact(&mut read_buffer[tracking_index..tracking_index + 1]);
+        match read_result {
+            Ok(()) => {
+                let last_byte = read_buffer[tracking_index] & 0x80 == 0;
+                read_buffer[tracking_index] &= 0x7F;
+                if tracking_index > 0 {
+                    //compact bytes
+                    read_buffer[tracking_index - 1] |=
+                        read_buffer[tracking_index] << (8 - shift_offset & 0x07);
+                    read_buffer[tracking_index] >>= shift_offset & 0x07;
+                }
+                if last_byte {
+                    break;
+                }
+                shift_offset += 1;
+                if shift_offset >= 8 && shift_offset & 0x07 == 0 {
+                    tracking_index -= 1;
+                }
+                tracking_index += 1;
+            }
+            Err(e) => {
+                return Err(match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        VariableLengthDecodingError::IncompleteVariableLengthEncoding
+                    }
+                    _ => VariableLengthDecodingError::IoError(e),
+                })
+            }
+        }
+    }
+    if overflow.is_empty() {
+        Ok(VariableLengthResult::Respresentable(B::from_le_bytes(
+            &read_buffer,
+        )))
+    } else {
+        overflow.copy_from_slice(&read_buffer);
+        Ok(VariableLengthResult::Unrepresentable(overflow))
+    }
 }
 
 #[derive(Debug)]
 pub enum VariableLengthDecodingError {
     IncompleteVariableLengthEncoding,
-    TooManyBytes,
+    IoError(io::Error),
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -48,7 +114,6 @@ mod tests {
     fn test_veriable_encoding() {
         let mut out = vec![];
         let buffer = &mut out;
-
         variable_length_encode(0, buffer);
         variable_length_encode(127, buffer);
         variable_length_encode(128, buffer);
@@ -59,18 +124,44 @@ mod tests {
         variable_length_encode(268435455, buffer);
         variable_length_encode(268435456, buffer);
 
-        assert_eq!(0,variable_lenth_decode(&out[0..1]).unwrap());
-        assert_eq!(127,variable_lenth_decode(&out[1..2]).unwrap());
-        assert_eq!(128,variable_lenth_decode(&out[2..4]).unwrap());
-        assert_eq!(16383,variable_lenth_decode(&out[4..6]).unwrap());
-        assert_eq!(16384,variable_lenth_decode(&out[6..9]).unwrap());
-        assert_eq!(2097151,variable_lenth_decode(&out[9..12]).unwrap());
-        assert_eq!(2097152,variable_lenth_decode(&out[12..16]).unwrap());
+        let mut out = &out[..];
+        //let r = variable_lenth_decode(&mut out).unwrap();
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(0usize)
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(127usize)
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(128u128)
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(16383u64)
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(16384usize),
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(2097151u128)
+        ));
+        assert!(matches!(
+            variable_lenth_decode(&mut out).unwrap(),
+            VariableLengthResult::Respresentable(2097152u64)
+        ));
 
-        println!("{:?}", variable_lenth_decode(&[0xFF, 0xFF, 0x7F]));
-        println!("{:?}", variable_lenth_decode(&[0x80, 0x80, 0x80, 0x01]));
+        // println!("{:?}", variable_lenth_decode(&[0xFF, 0xFF, 0x7F]));
+        // println!("{:?}", variable_lenth_decode(&[0x80, 0x80, 0x80, 0x01]));
 
-        println!("{:?}", variable_lenth_decode(&[0xFF, 0xFF, 0xFF, 0x7F]));
-        println!("{:?}", variable_lenth_decode(&[0x80, 0x80, 0x80, 0x80, 0x01]));
+        // println!("{:?}", variable_lenth_decode(&mut [0xFF, 0xFF, 0xFF, 0x7F]));
+        // println!(
+        //     "{:?}",
+        //     variable_lenth_decode(&mut [0x80, 0x80, 0x80, 0x80, 0x01])
+        // );
     }
 }
