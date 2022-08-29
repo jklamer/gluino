@@ -1,4 +1,6 @@
-use std::ops::Add;
+use std::{ops::Add, fmt::Write, io::Read};
+
+use crate::util::variable_length_encode;
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 enum Size {
@@ -63,6 +65,7 @@ const ENUM: u8 = 43;
 const UNION: u8 = 45;
 const DECIMAL: u8 = 46;
 const TUPLE: u8 = 47;
+const BYTES: u8 = 48;
 const OPTIONAL: u8 = 63;
 
 // aliases
@@ -79,7 +82,7 @@ const DOUBLE_FP: u8 = 9;
 
 impl Spec {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(128);
+        let mut out = Vec::with_capacity(256);
         self.to_bytes_internal(&mut out);
         out
     }
@@ -92,62 +95,132 @@ impl Spec {
                 1 => out.push(UINT_1),
                 2 => out.push(UINT_2),
                 3 => out.push(UINT_3),
-                s => out.copy_from_slice(&[UINT, *s]),
+                s => out.extend_from_slice(&[UINT, *s]),
             },
             Spec::Int(scale) => match scale {
                 0 => out.push(INT_0),
                 1 => out.push(INT_1),
                 2 => out.push(INT_2),
                 3 => out.push(INT_3),
-                s => out.copy_from_slice(&[UINT, *s]),
+                s => out.extend_from_slice(&[UINT, *s]),
             },
             Spec::BinaryFloatingPoint(fmt) => match fmt {
                 InterchangeBinaryFloatingPointFormat::Single => out.push(SINGLE_FP),
                 InterchangeBinaryFloatingPointFormat::Double => out.push(DOUBLE_FP),
-                InterchangeBinaryFloatingPointFormat::Half => out.copy_from_slice(&[BINARY_FP, 0]),
+                InterchangeBinaryFloatingPointFormat::Half => out.extend_from_slice(&[BINARY_FP, 0]),
                 InterchangeBinaryFloatingPointFormat::Quadruple => {
-                    out.copy_from_slice(&[BINARY_FP, 3])
+                    out.extend_from_slice(&[BINARY_FP, 3])
                 }
                 InterchangeBinaryFloatingPointFormat::Octuple => {
-                    out.copy_from_slice(&[BINARY_FP, 4])
+                    out.extend_from_slice(&[BINARY_FP, 4])
                 }
             },
             Spec::DecimalFloatingPoint(fmt) => match fmt {
                 InterchangeDecimalFloatingPointFormat::Dec32 => {
-                    out.copy_from_slice(&[DECIMAL_FP, 0])
+                    out.extend_from_slice(&[DECIMAL_FP, 0])
                 }
                 InterchangeDecimalFloatingPointFormat::Dec64 => {
-                    out.copy_from_slice(&[DECIMAL_FP, 1])
+                    out.extend_from_slice(&[DECIMAL_FP, 1])
                 }
                 InterchangeDecimalFloatingPointFormat::Dec128 => {
-                    out.copy_from_slice(&[DECIMAL_FP, 2])
+                    out.extend_from_slice(&[DECIMAL_FP, 2])
                 }
             },
-            Spec::Decimal { scale, precision } => todo!(),
+            Spec::Decimal { scale, precision } => {
+                out.push(DECIMAL);
+                variable_length_encode(*scale as u128, out);
+                variable_length_encode(*precision as u128, out);
+            },
             Spec::Map {
                 key_spec,
                 value_spec,
                 size,
-            } => todo!(),
-            Spec::List { value_spec, size } => todo!(),
+            } => {
+                out.push(MAP);
+                size_to_bytes(size, out);
+                Spec::to_bytes_internal(key_spec, out);
+                Spec::to_bytes_internal(value_spec, out);
+            },
+            Spec::List { value_spec, size } => {
+                out.push(LIST);
+                size_to_bytes(size, out);
+                Spec::to_bytes_internal(value_spec, out);
+            },
             Spec::String(_) => todo!(),
-            Spec::Bytes(_) => {}
+            Spec::Bytes(size) => {
+                out.push(BYTES);
+                size_to_bytes(size, out);
+            }
             Spec::Optional(optional_type) => {
                 out.push(OPTIONAL);
                 Spec::to_bytes_internal(&optional_type, out)
             }
-            Spec::Name { name, spec } => todo!(),
-            Spec::Ref { name } => todo!(),
-            Spec::Record(_) => todo!(),
-            Spec::Tuple(_) => todo!(),
-            Spec::Enum(_) => todo!(),
-            Spec::Union(_) => todo!(),
-            Spec::Void => todo!(),
+            Spec::Name { name, spec } => {
+                out.push(NAME);
+                encode_string(name, out);
+                Spec::to_bytes_internal(spec, out);
+            },
+            Spec::Ref { name } => {
+                out.push(REF);
+                encode_string(name, out);
+            },
+            Spec::Record(fields) => {
+                out.push(RECORD);
+                variable_length_encode(fields.len() as u128, out);
+                for (name, spec) in fields {
+                    encode_string(name, out);
+                    Spec::to_bytes_internal(&spec, out);
+                }
+            },
+            Spec::Tuple(fields) => {
+                out.push(TUPLE);
+                variable_length_encode(fields.len() as u128, out);
+                for spec in fields {
+                    Spec::to_bytes_internal(&spec, out);
+                }
+            },
+            Spec::Enum(variants) => {
+                out.push(ENUM);
+                variable_length_encode(variants.len() as u128, out);
+                for (name, spec) in variants {
+                    encode_string(name, out);
+                    Spec::to_bytes_internal(spec, out);
+                }
+            },
+            Spec::Union(variants) => {
+                out.push(UNION);
+                variable_length_encode(variants.len()  as u128, out);
+                for spec in variants {
+                    Spec::to_bytes_internal(spec, out)
+                }
+            },
+            Spec::Void => {
+                out.push(VOID)
+            },
         }
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Spec, SpecParsingError> {
+    fn from_bytes<R:Read>(bytes: &mut R) -> Result<Spec, SpecParsingError> {
         Ok(Spec::Void)
+    }
+}
+
+fn encode_string(string: &String, out: &mut Vec<u8>) {
+    let b =  string.as_bytes();
+    variable_length_encode(b.len() as u128, out);
+    out.extend_from_slice(b);
+}
+
+
+fn size_to_bytes(size: &Size, out: &mut Vec<u8>) {
+    match size {
+        Size::Fixed(n) => {
+            out.push(0);
+            variable_length_encode(*n as u128, out)
+        },
+        Size::Variable => {
+            out.push(1);
+        },
     }
 }
 
@@ -207,6 +280,13 @@ impl InterchangeDecimalFloatingPointFormat {
             InterchangeDecimalFloatingPointFormat::Dec128 => 34,
         }
     }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+enum StringEncodingFmt{
+    Utf8, //use this one, please
+    Utf16,
+    Ascii,
 }
 
 // pub enum CompiledSpec {}

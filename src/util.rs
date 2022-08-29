@@ -3,7 +3,7 @@ use std::{
     mem::size_of,
 };
 
-pub fn variable_length_encode(mut z: usize, buffer: &mut Vec<u8>) {
+pub fn variable_length_encode(mut z: u128, buffer: &mut Vec<u8>) {
     loop {
         if z <= 0x7F {
             buffer.push((z & 0x7F) as u8);
@@ -39,12 +39,12 @@ macro_rules! gen_vldt_impls_nums {
         )+
     }
 }
-gen_vldt_impls_nums!(u8 u16 u32 u64 u128 usize);
+gen_vldt_impls_nums!(u16 u32 u64 u128 usize);
 
 #[derive(Debug)]
 pub enum VariableLengthResult<B: VariableLengthDecodingTarget> {
     Respresentable(B),
-    Unrepresentable(Vec<u8>), // litte indian arbitrary length unint
+    Unrepresentable(Vec<u8>), // litte indian arbitrary length uint
 }
 
 pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
@@ -54,25 +54,23 @@ pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
     let mut tracking_index = 0usize;
     let mut overflow = Vec::<u8>::with_capacity(0);
     let mut shift_offset = 0usize;
-    loop {
+    let mut last_byte_reached: bool = false;
+    while !last_byte_reached {
         if tracking_index >= B::BYTE_LEN {
-            overflow.copy_from_slice(&read_buffer[0..(B::BYTE_LEN - 1)]);
+            overflow.extend_from_slice(&read_buffer[0..(B::BYTE_LEN - 1)]);
             tracking_index = 1;
             read_buffer[0] = read_buffer[B::BYTE_LEN - 1];
         }
         let read_result = input.read_exact(&mut read_buffer[tracking_index..tracking_index + 1]);
         match read_result {
             Ok(()) => {
-                let last_byte = read_buffer[tracking_index] & 0x80 == 0;
+                last_byte_reached = read_buffer[tracking_index] & 0x80 == 0;
                 read_buffer[tracking_index] &= 0x7F;
                 if tracking_index > 0 {
                     //compact bytes
                     read_buffer[tracking_index - 1] |=
                         read_buffer[tracking_index] << (8 - shift_offset & 0x07);
                     read_buffer[tracking_index] >>= shift_offset & 0x07;
-                }
-                if last_byte {
-                    break;
                 }
                 shift_offset += 1;
                 if shift_offset >= 8 && shift_offset & 0x07 == 0 {
@@ -90,12 +88,12 @@ pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
             }
         }
     }
-    if overflow.is_empty() {
+    if overflow.is_empty() && tracking_index < B::BYTE_LEN {
         Ok(VariableLengthResult::Respresentable(B::from_le_bytes(
             &read_buffer,
         )))
     } else {
-        overflow.copy_from_slice(&read_buffer);
+        overflow.extend_from_slice(&read_buffer[0..tracking_index]);
         Ok(VariableLengthResult::Unrepresentable(overflow))
     }
 }
@@ -154,14 +152,28 @@ mod tests {
             variable_lenth_decode(&mut out).unwrap(),
             VariableLengthResult::Respresentable(2097152u64)
         ));
+    }
 
-        // println!("{:?}", variable_lenth_decode(&[0xFF, 0xFF, 0x7F]));
-        // println!("{:?}", variable_lenth_decode(&[0x80, 0x80, 0x80, 0x01]));
-
-        // println!("{:?}", variable_lenth_decode(&mut [0xFF, 0xFF, 0xFF, 0x7F]));
-        // println!(
-        //     "{:?}",
-        //     variable_lenth_decode(&mut [0x80, 0x80, 0x80, 0x80, 0x01])
-        // );
+    #[test]
+    fn test_unrepresentable_decoding() {
+        let mut out = vec![];
+        let buffer = &mut out;
+        variable_length_encode(268435455, buffer);
+        variable_length_encode(268435456, buffer);
+        let mut out = &out[..];
+        if let VariableLengthResult::<u16>::Unrepresentable(v) = variable_lenth_decode(&mut out).unwrap(){
+            let mut v2 = [0u8;4];
+            v2[0..v.len()].copy_from_slice(&v[..]);
+            assert_eq!(268435455, u32::from_le_bytes(v2));
+        }else{
+            assert!(false);
+        }
+        if let VariableLengthResult::<u32>::Unrepresentable(v) = variable_lenth_decode(&mut out).unwrap(){
+            let mut v2 = [0u8;8];
+            v2[0..v.len()].copy_from_slice(&v[..]);
+            assert_eq!(268435456, u64::from_le_bytes(v2));
+        }else{
+            assert!(false);
+        }
     }
 }
