@@ -1,21 +1,35 @@
 use std::{
-    io::{self, Read},
+    io::{self, Read, Write},
     mem::size_of,
 };
 
-pub fn variable_length_encode(mut z: u128, buffer: &mut Vec<u8>) {
-    loop {
-        if z <= 0x7F {
-            buffer.push((z & 0x7F) as u8);
-            break;
-        } else {
-            buffer.push((0x80 | (z & 0x7F)) as u8);
-            z >>= 7;
-        }
-    }
-}
 const SYSTEM_SIZE: usize = size_of::<usize>();
-const MAX_SYSTEM_BYTES: usize = 16;
+const MAX_LANG_BYTES: usize = 16;
+const MAX_SYSTEM_BYTES_VLE: usize = MAX_LANG_BYTES * 8 / 7 + 1;
+
+pub fn variable_length_encode_u64<W: Write>(mut z: u64, out: &mut W) -> Result<usize, io::Error> {
+    let mut encoding = [0u8; MAX_SYSTEM_BYTES_VLE];
+    let mut n = 0usize;
+    while z > 0x7F {
+        encoding[n] = (0x80 | (z & 0x7F)) as u8;
+        z >>= 7;
+        n += 1;
+    }
+    encoding[n] = (z & 0x7F) as u8;
+    out.write(&encoding[0..=n])
+}
+
+pub fn variable_length_encode_u128<W: Write>(mut z: u128, out: &mut W) -> Result<usize, io::Error> {
+    let mut encoding = [0u8; MAX_SYSTEM_BYTES_VLE];
+    let mut n = 0usize;
+    while z > 0x7F {
+        encoding[n] = (0x80 | (z & 0x7F)) as u8;
+        z >>= 7;
+        n += 1;
+    }
+    encoding[n] = (z & 0x7F) as u8;
+    out.write(&encoding[0..=n])
+}
 
 pub trait VariableLengthDecodingTarget {
     const BYTE_LEN: usize;
@@ -27,7 +41,7 @@ macro_rules! gen_vldt_impls_nums {
         $(
         impl VariableLengthDecodingTarget for $T {
             const BYTE_LEN: usize = std::mem::size_of::<$T>();
-        
+
             #[inline]
             fn from_le_bytes(b: &[u8]) -> Self {
                 assert!(b.len() >= Self::BYTE_LEN);
@@ -50,7 +64,7 @@ pub enum VariableLengthResult<B: VariableLengthDecodingTarget> {
 pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
     input: &mut R,
 ) -> Result<VariableLengthResult<B>, VariableLengthDecodingError> {
-    let mut read_buffer = [0u8; MAX_SYSTEM_BYTES];
+    let mut read_buffer = [0u8; MAX_LANG_BYTES];
     let mut tracking_index = 0usize;
     let mut overflow = Vec::<u8>::with_capacity(0);
     let mut shift_offset = 0usize;
@@ -112,15 +126,15 @@ mod tests {
     fn test_veriable_encoding() {
         let mut out = vec![];
         let buffer = &mut out;
-        variable_length_encode(0, buffer);
-        variable_length_encode(127, buffer);
-        variable_length_encode(128, buffer);
-        variable_length_encode(16383, buffer);
-        variable_length_encode(16384, buffer);
-        variable_length_encode(2097151, buffer);
-        variable_length_encode(2097152, buffer);
-        variable_length_encode(268435455, buffer);
-        variable_length_encode(268435456, buffer);
+        variable_length_encode_u64(0, buffer);
+        variable_length_encode_u64(127, buffer);
+        variable_length_encode_u64(128, buffer);
+        variable_length_encode_u128(16383, buffer);
+        variable_length_encode_u128(16384, buffer);
+        variable_length_encode_u64(2097151, buffer);
+        variable_length_encode_u128(2097152, buffer);
+        variable_length_encode_u128(268435455, buffer);
+        variable_length_encode_u64(268435456, buffer);
 
         let mut out = &out[..];
         //let r = variable_lenth_decode(&mut out).unwrap();
@@ -158,21 +172,25 @@ mod tests {
     fn test_unrepresentable_decoding() {
         let mut out = vec![];
         let buffer = &mut out;
-        variable_length_encode(268435455, buffer);
-        variable_length_encode(268435456, buffer);
+        variable_length_encode_u64(268435455, buffer);
+        variable_length_encode_u128(268435456, buffer);
         let mut out = &out[..];
-        if let VariableLengthResult::<u16>::Unrepresentable(v) = variable_lenth_decode(&mut out).unwrap(){
-            let mut v2 = [0u8;4];
+        if let VariableLengthResult::<u16>::Unrepresentable(v) =
+            variable_lenth_decode(&mut out).unwrap()
+        {
+            let mut v2 = [0u8; 4];
             v2[0..v.len()].copy_from_slice(&v[..]);
             assert_eq!(268435455, u32::from_le_bytes(v2));
-        }else{
+        } else {
             assert!(false);
         }
-        if let VariableLengthResult::<u32>::Unrepresentable(v) = variable_lenth_decode(&mut out).unwrap(){
-            let mut v2 = [0u8;8];
+        if let VariableLengthResult::<u32>::Unrepresentable(v) =
+            variable_lenth_decode(&mut out).unwrap()
+        {
+            let mut v2 = [0u8; 8];
             v2[0..v.len()].copy_from_slice(&v[..]);
             assert_eq!(268435456, u64::from_le_bytes(v2));
-        }else{
+        } else {
             assert!(false);
         }
     }
