@@ -1,9 +1,10 @@
+use core::slice;
 use std::{
     io::Read,
-    io::{self, Write}, str::Bytes,
+    io::{self, Write},
 };
 
-use crate::util::variable_length_encode_u64;
+use crate::util::{self, variable_length_decode_u64, variable_length_encode_u64};
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 enum Size {
@@ -27,9 +28,9 @@ pub enum Spec {
         precision: u64,
     },
     Map {
+        size: Size,
         key_spec: Box<Spec>,
         value_spec: Box<Spec>,
-        size: Size,
     },
     List {
         value_spec: Box<Spec>,
@@ -118,24 +119,18 @@ impl Spec {
             Spec::BinaryFloatingPoint(fmt) => match fmt {
                 InterchangeBinaryFloatingPointFormat::Single => out.write(&[SINGLE_FP])?,
                 InterchangeBinaryFloatingPointFormat::Double => out.write(&[DOUBLE_FP])?,
-                InterchangeBinaryFloatingPointFormat::Half => out.write(&[BINARY_FP, 0])?,
-                InterchangeBinaryFloatingPointFormat::Quadruple => out.write(&[BINARY_FP, 3])?,
-                InterchangeBinaryFloatingPointFormat::Octuple => out.write(&[BINARY_FP, 4])?,
+                fmt => out.write(&[BINARY_FP])? + fmt.encode(out)?,
             },
-            Spec::DecimalFloatingPoint(fmt) => match fmt {
-                InterchangeDecimalFloatingPointFormat::Dec32 => out.write(&[DECIMAL_FP, 0])?,
-                InterchangeDecimalFloatingPointFormat::Dec64 => out.write(&[DECIMAL_FP, 1])?,
-                InterchangeDecimalFloatingPointFormat::Dec128 => out.write(&[DECIMAL_FP, 2])?,
-            },
+            Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
             Spec::Decimal { scale, precision } => {
                 out.write(&[DECIMAL])?
                     + variable_length_encode_u64(*scale, out)?
                     + variable_length_encode_u64(*precision, out)?
             }
             Spec::Map {
+                size,
                 key_spec,
                 value_spec,
-                size,
             } => {
                 out.write(&[MAP])?
                     + size_to_bytes(size, out)?
@@ -160,10 +155,10 @@ impl Spec {
             }
             Spec::Name { name, spec } => {
                 out.write(&[NAME])?
-                    + encode_string(name, out)?
+                    + encode_string_utf8(name, out)?
                     + Spec::to_bytes_internal(spec, out)?
             }
-            Spec::Ref { name } => out.write(&[REF])? + encode_string(name, out)?,
+            Spec::Ref { name } => out.write(&[REF])? + encode_string_utf8(name, out)?,
             Spec::Record(fields) => {
                 out.write(&[RECORD])?
                     + variable_length_encode_u64(fields.len() as u64, out)?
@@ -171,7 +166,7 @@ impl Spec {
                         .iter()
                         .map(|(name, spec)| {
                             combine(
-                                encode_string(name, out),
+                                encode_string_utf8(name, out),
                                 Spec::to_bytes_internal(&spec, out),
                             )
                         })
@@ -191,7 +186,10 @@ impl Spec {
                     + variants
                         .iter()
                         .map(|(name, spec)| {
-                            combine(encode_string(name, out), Spec::to_bytes_internal(spec, out))
+                            combine(
+                                encode_string_utf8(name, out),
+                                Spec::to_bytes_internal(spec, out),
+                            )
                         })
                         .fold(Ok(0usize), combine)?
             }
@@ -207,18 +205,91 @@ impl Spec {
         })
     }
 
-    pub fn read_as_bytes<R: Read>(input: &mut R) -> Result<Spec, SpecParsingError> {
-        let b =  input.bytes();
-        todo!()
+    pub fn read_from_bytes<R: Read>(input: &mut R) -> Result<Spec, SpecParsingError> {
+        match next_byte(input)? {
+            BOOL => Ok(Spec::Bool),
+            VOID => Ok(Spec::Void),
+            UINT => Ok(Spec::Uint(next_byte(input)?)),
+            INT => Ok(Spec::Int(next_byte(input)?)),
+            NAME => {
+                let name = decode_utf8_string(input)?;
+                let spec = Spec::read_from_bytes(input)?.into();
+                Ok(Spec::Name { name, spec })
+            }
+            REF => Ok(Spec::Ref {
+                name: decode_utf8_string(input)?,
+            }),
+            BINARY_FP => Ok(Spec::BinaryFloatingPoint(
+                InterchangeBinaryFloatingPointFormat::decode(input)?,
+            )),
+            DECIMAL_FP => Ok(Spec::DecimalFloatingPoint(
+                InterchangeDecimalFloatingPointFormat::decode(input)?,
+            )),
+            LIST => todo!(),
+            MAP => todo!(),
+            RECORD => todo!(),
+            ENUM => todo!(),
+            UNION => todo!(),
+            DECIMAL => todo!(),
+            TUPLE => todo!(),
+            BYTES => todo!(),
+            STRING => todo!(),
+            OPTIONAL => todo!(),
+            // aliases
+            UINT_0 => Ok(Spec::Uint(0)),
+            UINT_1 => Ok(Spec::Uint(1)),
+            UINT_2 => Ok(Spec::Uint(2)),
+            UINT_3 => Ok(Spec::Uint(3)),
+            INT_0 => Ok(Spec::Int(0)),
+            INT_1 => Ok(Spec::Int(1)),
+            INT_2 => Ok(Spec::Int(2)),
+            INT_3 => Ok(Spec::Int(3)),
+            SINGLE_FP => Ok(Spec::BinaryFloatingPoint(
+                InterchangeBinaryFloatingPointFormat::Single,
+            )),
+            DOUBLE_FP => Ok(Spec::BinaryFloatingPoint(
+                InterchangeBinaryFloatingPointFormat::Double,
+            )),
+            UTF8_STRING => Ok(Spec::String(StringEncodingFmt::Utf8, Size::Variable)),
+            flag => Err(SpecParsingError::UnknownSpecFlag(flag)),
+        }
     }
 }
 
-fn encode_string<W: Write>(string: &String, out: &mut W) -> Result<usize, io::Error> {
+#[inline]
+fn encode_string_utf8<W: Write>(string: &String, out: &mut W) -> Result<usize, io::Error> {
     let b = string.as_bytes();
-    combine(
-        variable_length_encode_u64(b.len() as u64, out),
-        out.write(b),
-    )
+    Ok(variable_length_encode_u64(b.len() as u64, out)? + out.write(b)?)
+}
+
+fn decode_utf8_string<R: Read>(input: &mut R) -> Result<String, SpecParsingError> {
+    let n = decode_u64(input)?;
+    let mut s = String::with_capacity(n as usize);
+    let n_actual = input.take(n).read_to_string(&mut s)?;
+    if (n_actual as u64) < n {
+        Err(SpecParsingError::UnexpectedEndOfBytes)
+    } else {
+        Ok(s)
+    }
+}
+
+fn decode_u64<R: Read>(input: &mut R) -> Result<u64, SpecParsingError> {
+    match variable_length_decode_u64(input)? {
+        util::VariableLengthResult::Respresentable(n) => Ok(n),
+        util::VariableLengthResult::Unrepresentable(v) => {
+            return Err(SpecParsingError::IntegerOverflowVariableLengthDecodingError(v))
+        }
+    }
+}
+
+#[inline]
+fn next_byte<R: Read>(input: &mut R) -> Result<u8, SpecParsingError> {
+    let mut flag: u8 = 255;
+    if 0usize == input.read(slice::from_mut(&mut flag))? {
+        Err(SpecParsingError::UnexpectedEndOfBytes)
+    } else {
+        Ok(flag)
+    }
 }
 
 fn size_to_bytes<W: Write>(size: &Size, out: &mut W) -> Result<usize, io::Error> {
@@ -231,11 +302,25 @@ fn size_to_bytes<W: Write>(size: &Size, out: &mut W) -> Result<usize, io::Error>
 pub enum SpecParsingError {
     ReadError(io::Error),
     UnexpectedEndOfBytes,
+    UnknownSpecFlag(u8),
+    UnknownBinaryFormatFlag(u8),
+    UnknownDecimalFormatFlag(u8),
+    VariableLengthDecodingError(util::VariableLengthDecodingError),
+    IntegerOverflowVariableLengthDecodingError(Vec<u8>),
 }
 
 impl From<io::Error> for SpecParsingError {
     fn from(e: io::Error) -> Self {
-        SpecParsingError::ReadError(e)
+        match e.kind() {
+            io::ErrorKind::UnexpectedEof => SpecParsingError::UnexpectedEndOfBytes,
+            _ => SpecParsingError::ReadError(e),
+        }
+    }
+}
+
+impl From<util::VariableLengthDecodingError> for SpecParsingError {
+    fn from(e: util::VariableLengthDecodingError) -> Self {
+        SpecParsingError::VariableLengthDecodingError(e)
     }
 }
 
@@ -268,6 +353,31 @@ impl InterchangeBinaryFloatingPointFormat {
             InterchangeBinaryFloatingPointFormat::Octuple => 19,
         }
     }
+
+    #[inline]
+    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
+        match self {
+            InterchangeBinaryFloatingPointFormat::Half => out.write(&[0]),
+            InterchangeBinaryFloatingPointFormat::Single => out.write(&[1]),
+            InterchangeBinaryFloatingPointFormat::Double => out.write(&[2]),
+            InterchangeBinaryFloatingPointFormat::Quadruple => out.write(&[3]),
+            InterchangeBinaryFloatingPointFormat::Octuple => out.write(&[4]),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn decode<R: Read>(
+        input: &mut R,
+    ) -> Result<InterchangeBinaryFloatingPointFormat, SpecParsingError> {
+        Ok(match next_byte(input)? {
+            0 => InterchangeBinaryFloatingPointFormat::Half,
+            1 => InterchangeBinaryFloatingPointFormat::Single,
+            2 => InterchangeBinaryFloatingPointFormat::Double,
+            3 => InterchangeBinaryFloatingPointFormat::Quadruple,
+            4 => InterchangeBinaryFloatingPointFormat::Octuple,
+            b => return Err(SpecParsingError::UnknownBinaryFormatFlag(b)),
+        })
+    }
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -292,6 +402,27 @@ impl InterchangeDecimalFloatingPointFormat {
             InterchangeDecimalFloatingPointFormat::Dec64 => 16,
             InterchangeDecimalFloatingPointFormat::Dec128 => 34,
         }
+    }
+
+    #[inline]
+    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
+        Ok(match self {
+            InterchangeDecimalFloatingPointFormat::Dec32 => out.write(&[0])?,
+            InterchangeDecimalFloatingPointFormat::Dec64 => out.write(&[1])?,
+            InterchangeDecimalFloatingPointFormat::Dec128 => out.write(&[2])?,
+        })
+    }
+
+    #[inline]
+    pub(crate) fn decode<R: Read>(
+        input: &mut R,
+    ) -> Result<InterchangeDecimalFloatingPointFormat, SpecParsingError> {
+        Ok(match next_byte(input)? {
+            0 => InterchangeDecimalFloatingPointFormat::Dec32,
+            1 => InterchangeDecimalFloatingPointFormat::Dec64,
+            2 => InterchangeDecimalFloatingPointFormat::Dec128,
+            b => return Err(SpecParsingError::UnknownDecimalFormatFlag(b)),
+        })
     }
 }
 

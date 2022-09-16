@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write},
+    io::{self, Bytes, Read, Write},
     mem::size_of,
 };
 
@@ -17,6 +17,11 @@ pub fn variable_length_encode_u64<W: Write>(mut z: u64, out: &mut W) -> Result<u
     }
     encoding[n] = (z & 0x7F) as u8;
     out.write(&encoding[0..=n])
+}
+pub fn variable_length_decode_u64<R: Read>(
+    input: &mut R,
+) -> Result<VariableLengthResult<u64>, VariableLengthDecodingError> {
+    variable_lenth_decode(input)
 }
 
 pub fn variable_length_encode_u128<W: Write>(mut z: u128, out: &mut W) -> Result<usize, io::Error> {
