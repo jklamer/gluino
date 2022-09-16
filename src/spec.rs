@@ -7,7 +7,7 @@ use std::{
 use crate::util::{self, variable_length_decode_u64, variable_length_encode_u64};
 
 #[derive(Hash, Eq, PartialEq, Clone)]
-enum Size {
+pub enum Size {
     Fixed(u64),
     Variable,
 }
@@ -36,7 +36,7 @@ pub enum Spec {
         value_spec: Box<Spec>,
         size: Size,
     },
-    String(StringEncodingFmt, Size),
+    String(Size, StringEncodingFmt),
     Bytes(Size),
     Optional(Box<Spec>),
     Name {
@@ -142,12 +142,15 @@ impl Spec {
                     + size_to_bytes(size, out)?
                     + Spec::to_bytes_internal(value_spec, out)?
             }
-            Spec::String(str_fmt, size) => {
+            Spec::String(size, str_fmt) => {
+                size_to_bytes(size, out)? +
                 match str_fmt {
-                    StringEncodingFmt::Utf8 => out.write(&[UTF8_STRING]),
-                    StringEncodingFmt::Utf16 => out.write(&[STRING, 1]),
-                    StringEncodingFmt::Ascii => out.write(&[STRING, 2]),
-                }? + size_to_bytes(size, out)?
+                    StringEncodingFmt::Utf8 => out.write(&[UTF8_STRING])?,
+                    str_fmt => {
+                        out.write(&[STRING])? +
+                        str_fmt.encode(out)?
+                    }
+                } 
             }
             Spec::Bytes(size) => out.write(&[BYTES])? + size_to_bytes(size, out)?,
             Spec::Optional(optional_type) => {
@@ -234,7 +237,7 @@ impl Spec {
             TUPLE => todo!(),
             BYTES => todo!(),
             STRING => todo!(),
-            OPTIONAL => todo!(),
+            OPTIONAL => Ok(Spec::Optional(Spec::read_from_bytes(input)?.into())),
             // aliases
             UINT_0 => Ok(Spec::Uint(0)),
             UINT_1 => Ok(Spec::Uint(1)),
@@ -250,7 +253,7 @@ impl Spec {
             DOUBLE_FP => Ok(Spec::BinaryFloatingPoint(
                 InterchangeBinaryFloatingPointFormat::Double,
             )),
-            UTF8_STRING => Ok(Spec::String(StringEncodingFmt::Utf8, Size::Variable)),
+            UTF8_STRING => Ok(Spec::String(Size::Variable, StringEncodingFmt::Utf8)),
             flag => Err(SpecParsingError::UnknownSpecFlag(flag)),
         }
     }
@@ -305,6 +308,7 @@ pub enum SpecParsingError {
     UnknownSpecFlag(u8),
     UnknownBinaryFormatFlag(u8),
     UnknownDecimalFormatFlag(u8),
+    UnknownStringFormatFlag(u8),
     VariableLengthDecodingError(util::VariableLengthDecodingError),
     IntegerOverflowVariableLengthDecodingError(Vec<u8>),
 }
@@ -325,7 +329,7 @@ impl From<util::VariableLengthDecodingError> for SpecParsingError {
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
-enum InterchangeBinaryFloatingPointFormat {
+pub enum InterchangeBinaryFloatingPointFormat {
     Half,
     Single,
     Double,
@@ -381,7 +385,7 @@ impl InterchangeBinaryFloatingPointFormat {
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
-enum InterchangeDecimalFloatingPointFormat {
+pub enum InterchangeDecimalFloatingPointFormat {
     Dec32,
     Dec64,
     Dec128,
@@ -406,11 +410,11 @@ impl InterchangeDecimalFloatingPointFormat {
 
     #[inline]
     pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        Ok(match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => out.write(&[0])?,
-            InterchangeDecimalFloatingPointFormat::Dec64 => out.write(&[1])?,
-            InterchangeDecimalFloatingPointFormat::Dec128 => out.write(&[2])?,
-        })
+        match self {
+            InterchangeDecimalFloatingPointFormat::Dec32 => out.write(&[0]),
+            InterchangeDecimalFloatingPointFormat::Dec64 => out.write(&[1]),
+            InterchangeDecimalFloatingPointFormat::Dec128 => out.write(&[2]),
+        }
     }
 
     #[inline]
@@ -427,14 +431,35 @@ impl InterchangeDecimalFloatingPointFormat {
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Default)]
-enum StringEncodingFmt {
+pub enum StringEncodingFmt {
     #[default]
     Utf8, //use this one, please
     Utf16,
     Ascii,
 }
 
-impl StringEncodingFmt {}
+impl StringEncodingFmt {
+    #[inline]
+    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
+        match self {
+            StringEncodingFmt::Utf8 => out.write(&[0]),
+            StringEncodingFmt::Utf16 => out.write(&[1]),
+            StringEncodingFmt::Ascii => out.write(&[2]),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn decode<R: Read>(
+        input: &mut R,
+    ) -> Result<StringEncodingFmt, SpecParsingError> {
+        Ok(match next_byte(input)? {
+            0 => StringEncodingFmt::Utf8,
+            1 => StringEncodingFmt::Utf16,
+            2 => StringEncodingFmt::Ascii,
+            b => return Err(SpecParsingError::UnknownStringFormatFlag(b)),
+        })
+    }
+}
 
 fn combine(a: Result<usize, io::Error>, b: Result<usize, io::Error>) -> Result<usize, io::Error> {
     match (a.as_ref(), b.as_ref()) {
