@@ -1,5 +1,5 @@
 mod ser;
-mod spec;
+pub mod spec;
 mod util;
 
 pub fn change_data() {

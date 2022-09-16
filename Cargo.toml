@@ -9,3 +9,5 @@ repository = "https://github.com/jklamer/Gluino"
 description = "A library for working with/serializing data using the Gluino spec."
 [dependencies]
 serde = {version = "1.0.143", features = ["derive"] }
+strum = {version = "0.24.1", features = ["derive"] }
+strum_macros = {version = "0.24.1"}

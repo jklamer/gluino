@@ -3,6 +3,7 @@ use std::{
     io::Read,
     io::{self, Write},
 };
+use strum_macros::{EnumDiscriminants, EnumIter};
 
 use crate::util::{self, variable_length_decode_u64, variable_length_encode_u64};
 
@@ -10,7 +11,9 @@ pub trait GluinoSpecType {
     fn get_spec() -> Spec;
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
+#[strum_discriminants(name(SpecKind))]
+#[strum_discriminants(derive(EnumIter))]
 pub enum Spec {
     Bool,
     Uint(u8),
