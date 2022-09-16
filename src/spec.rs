@@ -6,12 +6,6 @@ use std::{
 
 use crate::util::{self, variable_length_decode_u64, variable_length_encode_u64};
 
-#[derive(Hash, Eq, PartialEq, Clone)]
-pub enum Size {
-    Fixed(u64),
-    Variable,
-}
-
 pub trait GluinoSpecType {
     fn get_spec() -> Spec;
 }
@@ -33,8 +27,8 @@ pub enum Spec {
         value_spec: Box<Spec>,
     },
     List {
-        value_spec: Box<Spec>,
         size: Size,
+        value_spec: Box<Spec>,
     },
     String(Size, StringEncodingFmt),
     Bytes(Size),
@@ -133,26 +127,21 @@ impl Spec {
                 value_spec,
             } => {
                 out.write(&[MAP])?
-                    + size_to_bytes(size, out)?
+                    + size.encode(out)?
                     + Spec::to_bytes_internal(key_spec, out)?
                     + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::List { value_spec, size } => {
-                out.write(&[LIST])?
-                    + size_to_bytes(size, out)?
-                    + Spec::to_bytes_internal(value_spec, out)?
+                out.write(&[LIST])? + size.encode(out)? + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::String(size, str_fmt) => {
-                size_to_bytes(size, out)? +
-                match str_fmt {
-                    StringEncodingFmt::Utf8 => out.write(&[UTF8_STRING])?,
-                    str_fmt => {
-                        out.write(&[STRING])? +
-                        str_fmt.encode(out)?
+                size.encode(out)?
+                    + match str_fmt {
+                        StringEncodingFmt::Utf8 => out.write(&[UTF8_STRING])?,
+                        str_fmt => out.write(&[STRING])? + str_fmt.encode(out)?,
                     }
-                } 
             }
-            Spec::Bytes(size) => out.write(&[BYTES])? + size_to_bytes(size, out)?,
+            Spec::Bytes(size) => out.write(&[BYTES])? + size.encode(out)?,
             Spec::Optional(optional_type) => {
                 out.write(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
             }
@@ -228,16 +217,68 @@ impl Spec {
             DECIMAL_FP => Ok(Spec::DecimalFloatingPoint(
                 InterchangeDecimalFloatingPointFormat::decode(input)?,
             )),
-            LIST => todo!(),
-            MAP => todo!(),
-            RECORD => todo!(),
-            ENUM => todo!(),
-            UNION => todo!(),
-            DECIMAL => todo!(),
-            TUPLE => todo!(),
-            BYTES => todo!(),
-            STRING => todo!(),
+            LIST => {
+                let size = Size::decode(input)?;
+                let value_spec = Spec::read_from_bytes(input)?.into();
+                Ok(Spec::List { size, value_spec })
+            }
+            MAP => {
+                let size = Size::decode(input)?;
+                let key_spec = Spec::read_from_bytes(input)?.into();
+                let value_spec = Spec::read_from_bytes(input)?.into();
+                Ok(Spec::Map {
+                    size,
+                    key_spec,
+                    value_spec,
+                })
+            }
+            DECIMAL => {
+                let scale = decode_u64(input)?;
+                let precision = decode_u64(input)?;
+                Ok(Spec::Decimal { scale, precision })
+            }
+            BYTES => {
+                let size = Size::decode(input)?;
+                Ok(Spec::Bytes(size))
+            }
+            STRING => {
+                let size = Size::decode(input)?;
+                let str_fmt = StringEncodingFmt::decode(input)?;
+                Ok(Spec::String(size, str_fmt))
+            }
             OPTIONAL => Ok(Spec::Optional(Spec::read_from_bytes(input)?.into())),
+            RECORD => {
+                let n = decode_u64(input)?;
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    v.push((decode_utf8_string(input)?, Spec::read_from_bytes(input)?));
+                }
+                Ok(Spec::Record(v))
+            }
+            TUPLE => {
+                let n = decode_u64(input)?;
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    v.push(Spec::read_from_bytes(input)?);
+                }
+                Ok(Spec::Tuple(v))
+            }
+            ENUM => {
+                let n = decode_u64(input)?;
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    v.push((decode_utf8_string(input)?, Spec::read_from_bytes(input)?));
+                }
+                Ok(Spec::Enum(v))
+            }
+            UNION => {
+                let n = decode_u64(input)?;
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    v.push(Spec::read_from_bytes(input)?);
+                }
+                Ok(Spec::Union(v))
+            }
             // aliases
             UINT_0 => Ok(Spec::Uint(0)),
             UINT_1 => Ok(Spec::Uint(1)),
@@ -295,13 +336,6 @@ fn next_byte<R: Read>(input: &mut R) -> Result<u8, SpecParsingError> {
     }
 }
 
-fn size_to_bytes<W: Write>(size: &Size, out: &mut W) -> Result<usize, io::Error> {
-    match size {
-        Size::Fixed(n) => combine(out.write(&[0]), variable_length_encode_u64(*n, out)),
-        Size::Variable => out.write(&[1]),
-    }
-}
-
 pub enum SpecParsingError {
     ReadError(io::Error),
     UnexpectedEndOfBytes,
@@ -309,6 +343,7 @@ pub enum SpecParsingError {
     UnknownBinaryFormatFlag(u8),
     UnknownDecimalFormatFlag(u8),
     UnknownStringFormatFlag(u8),
+    UnknownSizeFormatFlag(u8),
     VariableLengthDecodingError(util::VariableLengthDecodingError),
     IntegerOverflowVariableLengthDecodingError(Vec<u8>),
 }
@@ -325,6 +360,31 @@ impl From<io::Error> for SpecParsingError {
 impl From<util::VariableLengthDecodingError> for SpecParsingError {
     fn from(e: util::VariableLengthDecodingError) -> Self {
         SpecParsingError::VariableLengthDecodingError(e)
+    }
+}
+
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub enum Size {
+    Fixed(u64),
+    Variable,
+}
+
+impl Size {
+    #[inline]
+    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
+        match self {
+            Size::Fixed(n) => combine(out.write(&[0]), variable_length_encode_u64(*n, out)),
+            Size::Variable => out.write(&[1]),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<Size, SpecParsingError> {
+        match next_byte(input)? {
+            0 => Ok(Size::Fixed(decode_u64(input)?)),
+            1 => Ok(Size::Variable),
+            b => Err(SpecParsingError::UnknownSizeFormatFlag(b)),
+        }
     }
 }
 
@@ -449,9 +509,7 @@ impl StringEncodingFmt {
     }
 
     #[inline]
-    pub(crate) fn decode<R: Read>(
-        input: &mut R,
-    ) -> Result<StringEncodingFmt, SpecParsingError> {
+    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<StringEncodingFmt, SpecParsingError> {
         Ok(match next_byte(input)? {
             0 => StringEncodingFmt::Utf8,
             1 => StringEncodingFmt::Utf16,
@@ -468,5 +526,3 @@ fn combine(a: Result<usize, io::Error>, b: Result<usize, io::Error>) -> Result<u
         (_, Err(_)) => b,
     }
 }
-
-// pub enum CompiledSpec {}
