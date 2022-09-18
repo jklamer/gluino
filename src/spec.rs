@@ -11,7 +11,7 @@ pub trait GluinoSpecType {
     fn get_spec() -> Spec;
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(SpecKind))]
 #[strum_discriminants(derive(EnumIter))]
 pub enum Spec {
@@ -20,10 +20,7 @@ pub enum Spec {
     Int(u8),
     BinaryFloatingPoint(InterchangeBinaryFloatingPointFormat),
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat),
-    Decimal {
-        scale: u64,
-        precision: u64,
-    },
+    Decimal(DecimalFmt),
     Map {
         size: Size,
         key_spec: Box<Spec>,
@@ -111,7 +108,7 @@ impl Spec {
                 1 => out.write(&[INT_1])?,
                 2 => out.write(&[INT_2])?,
                 3 => out.write(&[INT_3])?,
-                s => out.write(&[UINT, *s])?,
+                s => out.write(&[INT, *s])?,
             },
             Spec::BinaryFloatingPoint(fmt) => match fmt {
                 InterchangeBinaryFloatingPointFormat::Single => out.write(&[SINGLE_FP])?,
@@ -119,11 +116,7 @@ impl Spec {
                 fmt => out.write(&[BINARY_FP])? + fmt.encode(out)?,
             },
             Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
-            Spec::Decimal { scale, precision } => {
-                out.write(&[DECIMAL])?
-                    + variable_length_encode_u64(*scale, out)?
-                    + variable_length_encode_u64(*precision, out)?
-            }
+            Spec::Decimal(fmt) => out.write(&[DECIMAL])? + fmt.encode(out)?,
             Spec::Map {
                 size,
                 key_spec,
@@ -138,11 +131,11 @@ impl Spec {
                 out.write(&[LIST])? + size.encode(out)? + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::String(size, str_fmt) => {
-                size.encode(out)?
-                    + match str_fmt {
-                        StringEncodingFmt::Utf8 => out.write(&[UTF8_STRING])?,
-                        str_fmt => out.write(&[STRING])? + str_fmt.encode(out)?,
-                    }
+                if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
+                    out.write(&[UTF8_STRING])?
+                } else {
+                    out.write(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
+                }
             }
             Spec::Bytes(size) => out.write(&[BYTES])? + size.encode(out)?,
             Spec::Optional(optional_type) => {
@@ -235,11 +228,7 @@ impl Spec {
                     value_spec,
                 })
             }
-            DECIMAL => {
-                let scale = decode_u64(input)?;
-                let precision = decode_u64(input)?;
-                Ok(Spec::Decimal { scale, precision })
-            }
+            DECIMAL => Ok(Spec::Decimal(DecimalFmt::decode(input)?)),
             BYTES => {
                 let size = Size::decode(input)?;
                 Ok(Spec::Bytes(size))
@@ -339,6 +328,7 @@ fn next_byte<R: Read>(input: &mut R) -> Result<u8, SpecParsingError> {
     }
 }
 
+#[derive(Debug)]
 pub enum SpecParsingError {
     ReadError(io::Error),
     UnexpectedEndOfBytes,
@@ -349,6 +339,7 @@ pub enum SpecParsingError {
     UnknownSizeFormatFlag(u8),
     VariableLengthDecodingError(util::VariableLengthDecodingError),
     IntegerOverflowVariableLengthDecodingError(Vec<u8>),
+    IllegalDecimalFmt(IllegalDecimalFmt),
 }
 
 impl From<io::Error> for SpecParsingError {
@@ -366,7 +357,13 @@ impl From<util::VariableLengthDecodingError> for SpecParsingError {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+impl From<IllegalDecimalFmt> for SpecParsingError {
+    fn from(e: IllegalDecimalFmt) -> Self {
+        SpecParsingError::IllegalDecimalFmt(e)
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub enum Size {
     Fixed(u64),
     Variable,
@@ -391,7 +388,41 @@ impl Size {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub struct DecimalFmt {
+    pub precision: u64,
+    pub scale: u64,
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub struct IllegalDecimalFmt;
+
+impl DecimalFmt {
+    pub fn new(precision: u64, scale: u64) -> Result<DecimalFmt, IllegalDecimalFmt> {
+        if scale <= precision {
+            Ok(DecimalFmt { precision, scale })
+        } else {
+            Err(IllegalDecimalFmt)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
+        combine(
+            variable_length_encode_u64(self.precision, out),
+            variable_length_encode_u64(self.scale, out),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<DecimalFmt, SpecParsingError> {
+        let precision = decode_u64(input)?;
+        let scale = decode_u64(input)?;
+        Ok(Self::new(precision, scale)?)
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
 pub enum InterchangeBinaryFloatingPointFormat {
     Half,
     Single,
@@ -447,7 +478,7 @@ impl InterchangeBinaryFloatingPointFormat {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
 pub enum InterchangeDecimalFloatingPointFormat {
     Dec32,
     Dec64,
@@ -493,7 +524,7 @@ impl InterchangeDecimalFloatingPointFormat {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Default)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter)]
 pub enum StringEncodingFmt {
     #[default]
     Utf8, //use this one, please
@@ -527,5 +558,143 @@ fn combine(a: Result<usize, io::Error>, b: Result<usize, io::Error>) -> Result<u
         (Ok(i), Ok(j)) => Ok(i + j),
         (Err(_), _) => a,
         (_, Err(_)) => b,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use std::io::Cursor;
+    use strum::IntoEnumIterator;
+
+    macro_rules! test_spec_serde {
+        ($spec:expr) => {
+            let s1: Spec = $spec;
+            assert_eq!(
+                s1,
+                Spec::read_from_bytes(&mut Cursor::new(s1.to_bytes()))
+                    .expect(format!("Unable to read {}", stringify!($spec)).as_str())
+            );
+        };
+    }
+    #[test]
+    pub fn test_cycle() {
+        for kind in SpecKind::iter() {
+            match kind {
+                SpecKind::Bool => {
+                    test_spec_serde!(Spec::Bool);
+                }
+                SpecKind::Uint => {
+                    for i in 0..=u8::MAX {
+                        test_spec_serde!(Spec::Uint(i));
+                    }
+                }
+                SpecKind::Int => {
+                    for i in 0..=u8::MAX {
+                        test_spec_serde!(Spec::Int(i));
+                    }
+                }
+                SpecKind::BinaryFloatingPoint => {
+                    for bfp in InterchangeBinaryFloatingPointFormat::iter() {
+                        test_spec_serde!(Spec::BinaryFloatingPoint(bfp));
+                    }
+                }
+                SpecKind::DecimalFloatingPoint => {
+                    for dfp in InterchangeDecimalFloatingPointFormat::iter() {
+                        test_spec_serde!(Spec::DecimalFloatingPoint(dfp));
+                    }
+                }
+                SpecKind::Decimal => {
+                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(22, 2).unwrap()));
+                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(4, 2).unwrap()));
+                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(77, 10).unwrap()));
+                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(40, 10).unwrap()));
+                }
+                SpecKind::Map => {
+                    test_spec_serde!(Spec::Map {
+                        size: Size::Variable,
+                        key_spec: Spec::Bool.into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                    test_spec_serde!(Spec::Map {
+                        size: Size::Fixed(50),
+                        key_spec: Spec::Int(4).into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                }
+                SpecKind::List => {
+                    test_spec_serde!(Spec::List {
+                        size: Size::Variable,
+                        value_spec: Spec::BinaryFloatingPoint(
+                            InterchangeBinaryFloatingPointFormat::Double
+                        )
+                        .into()
+                    });
+                    test_spec_serde!(Spec::List {
+                        size: Size::Fixed(32),
+                        value_spec: Spec::Decimal(DecimalFmt::new(10, 2).unwrap()).into()
+                    });
+                }
+                SpecKind::String => {
+                    test_spec_serde!(Spec::String(Size::Variable, StringEncodingFmt::Utf8));
+                    for fmt in StringEncodingFmt::iter() {
+                        test_spec_serde!(Spec::String(Size::Fixed(45), fmt.clone()));
+                        test_spec_serde!(Spec::String(Size::Variable, fmt));
+                    }
+                }
+                SpecKind::Bytes => {
+                    test_spec_serde!(Spec::Bytes(Size::Variable));
+                    test_spec_serde!(Spec::Bytes(Size::Fixed(1024)));
+                }
+                SpecKind::Optional => {
+                    test_spec_serde!(Spec::Optional(Spec::Bytes(Size::Variable).into()));
+                    test_spec_serde!(Spec::Optional(Spec::Int(6).into()));
+                }
+                SpecKind::Name => {
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::List {
+                            size: Size::Fixed(32),
+                            value_spec: Spec::Decimal(DecimalFmt::new(10, 2).unwrap()).into()
+                        }
+                        .into()
+                    });
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::Bytes(Size::Variable).into(),
+                    });
+                }
+                SpecKind::Ref => {
+                    test_spec_serde!(Spec::Ref {
+                        name: "test".into()
+                    });
+                    test_spec_serde!(Spec::Ref {
+                        name: "asdf".into()
+                    });
+                }
+                SpecKind::Record => {
+                    test_spec_serde!(Spec::Record(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Tuple => {
+                    test_spec_serde!(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Enum => {
+                    test_spec_serde!(Spec::Enum(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Union => {
+                    test_spec_serde!(Spec::Union(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Void => {
+                    test_spec_serde!(Spec::Void);
+                }
+            }
+        }
     }
 }
