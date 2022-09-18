@@ -20,7 +20,10 @@ pub enum Spec {
     Int(u8),
     BinaryFloatingPoint(InterchangeBinaryFloatingPointFormat),
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat),
-    Decimal(DecimalFmt),
+    Decimal {
+        precision: u64,
+        scale: u64,
+    },
     Map {
         size: Size,
         key_spec: Box<Spec>,
@@ -116,7 +119,11 @@ impl Spec {
                 fmt => out.write(&[BINARY_FP])? + fmt.encode(out)?,
             },
             Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
-            Spec::Decimal(fmt) => out.write(&[DECIMAL])? + fmt.encode(out)?,
+            Spec::Decimal { precision, scale } => {
+                out.write(&[DECIMAL])?
+                    + variable_length_encode_u64(*precision, out)?
+                    + variable_length_encode_u64(*scale, out)?
+            }
             Spec::Map {
                 size,
                 key_spec,
@@ -228,7 +235,11 @@ impl Spec {
                     value_spec,
                 })
             }
-            DECIMAL => Ok(Spec::Decimal(DecimalFmt::decode(input)?)),
+            DECIMAL => {
+                let precision = decode_u64(input)?;
+                let scale = decode_u64(input)?;
+                Ok(Spec::Decimal { precision, scale })
+            }
             BYTES => {
                 let size = Size::decode(input)?;
                 Ok(Spec::Bytes(size))
@@ -339,7 +350,6 @@ pub enum SpecParsingError {
     UnknownSizeFormatFlag(u8),
     VariableLengthDecodingError(util::VariableLengthDecodingError),
     IntegerOverflowVariableLengthDecodingError(Vec<u8>),
-    IllegalDecimalFmt(IllegalDecimalFmt),
 }
 
 impl From<io::Error> for SpecParsingError {
@@ -354,12 +364,6 @@ impl From<io::Error> for SpecParsingError {
 impl From<util::VariableLengthDecodingError> for SpecParsingError {
     fn from(e: util::VariableLengthDecodingError) -> Self {
         SpecParsingError::VariableLengthDecodingError(e)
-    }
-}
-
-impl From<IllegalDecimalFmt> for SpecParsingError {
-    fn from(e: IllegalDecimalFmt) -> Self {
-        SpecParsingError::IllegalDecimalFmt(e)
     }
 }
 
@@ -392,34 +396,6 @@ impl Size {
 pub struct DecimalFmt {
     pub precision: u64,
     pub scale: u64,
-}
-
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct IllegalDecimalFmt;
-
-impl DecimalFmt {
-    pub fn new(precision: u64, scale: u64) -> Result<DecimalFmt, IllegalDecimalFmt> {
-        if scale <= precision {
-            Ok(DecimalFmt { precision, scale })
-        } else {
-            Err(IllegalDecimalFmt)
-        }
-    }
-
-    #[inline]
-    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        combine(
-            variable_length_encode_u64(self.precision, out),
-            variable_length_encode_u64(self.scale, out),
-        )
-    }
-
-    #[inline]
-    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<DecimalFmt, SpecParsingError> {
-        let precision = decode_u64(input)?;
-        let scale = decode_u64(input)?;
-        Ok(Self::new(precision, scale)?)
-    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
@@ -568,18 +544,18 @@ mod tests {
     use std::io::Cursor;
     use strum::IntoEnumIterator;
 
-    macro_rules! test_spec_serde {
-        ($spec:expr) => {
-            let s1: Spec = $spec;
-            assert_eq!(
-                s1,
-                Spec::read_from_bytes(&mut Cursor::new(s1.to_bytes()))
-                    .expect(format!("Unable to read {}", stringify!($spec)).as_str())
-            );
-        };
-    }
     #[test]
-    pub fn test_cycle() {
+    fn test_serde() {
+        macro_rules! test_spec_serde {
+            ($spec:expr) => {
+                let s1: Spec = $spec;
+                assert_eq!(
+                    s1,
+                    Spec::read_from_bytes(&mut Cursor::new(s1.to_bytes()))
+                        .expect(format!("Unable to read {}", stringify!($spec)).as_str())
+                );
+            };
+        }
         for kind in SpecKind::iter() {
             match kind {
                 SpecKind::Bool => {
@@ -606,10 +582,22 @@ mod tests {
                     }
                 }
                 SpecKind::Decimal => {
-                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(22, 2).unwrap()));
-                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(4, 2).unwrap()));
-                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(77, 10).unwrap()));
-                    test_spec_serde!(Spec::Decimal(DecimalFmt::new(40, 10).unwrap()));
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 22,
+                        scale: 2
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 10,
+                        scale: 2
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 77,
+                        scale: 10
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 40,
+                        scale: 10
+                    });
                 }
                 SpecKind::Map => {
                     test_spec_serde!(Spec::Map {
@@ -633,7 +621,11 @@ mod tests {
                     });
                     test_spec_serde!(Spec::List {
                         size: Size::Fixed(32),
-                        value_spec: Spec::Decimal(DecimalFmt::new(10, 2).unwrap()).into()
+                        value_spec: Spec::Decimal {
+                            precision: 10,
+                            scale: 2
+                        }
+                        .into()
                     });
                 }
                 SpecKind::String => {
@@ -656,7 +648,11 @@ mod tests {
                         name: "test".into(),
                         spec: Spec::List {
                             size: Size::Fixed(32),
-                            value_spec: Spec::Decimal(DecimalFmt::new(10, 2).unwrap()).into()
+                            value_spec: Spec::Decimal {
+                                precision: 10,
+                                scale: 2
+                            }
+                            .into()
                         }
                         .into()
                     });
@@ -693,6 +689,156 @@ mod tests {
                 }
                 SpecKind::Void => {
                     test_spec_serde!(Spec::Void);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_write_size() {
+        macro_rules! test_spec_write_size {
+            ($spec:expr) => {
+                let s1: Spec = $spec;
+                let mut v = Vec::new();
+                let reported_size = s1.write_as_bytes(&mut v).expect(
+                    format!("Unable to write to bytes. Spec: {}", stringify!($spec)).as_str(),
+                );
+                assert_eq!(v.len(), reported_size);
+            };
+        }
+        for kind in SpecKind::iter() {
+            match kind {
+                SpecKind::Bool => {
+                    test_spec_write_size!(Spec::Bool);
+                }
+                SpecKind::Uint => {
+                    for i in 0..=u8::MAX {
+                        test_spec_write_size!(Spec::Uint(i));
+                    }
+                }
+                SpecKind::Int => {
+                    for i in 0..=u8::MAX {
+                        test_spec_write_size!(Spec::Int(i));
+                    }
+                }
+                SpecKind::BinaryFloatingPoint => {
+                    for bfp in InterchangeBinaryFloatingPointFormat::iter() {
+                        test_spec_write_size!(Spec::BinaryFloatingPoint(bfp));
+                    }
+                }
+                SpecKind::DecimalFloatingPoint => {
+                    for dfp in InterchangeDecimalFloatingPointFormat::iter() {
+                        test_spec_write_size!(Spec::DecimalFloatingPoint(dfp));
+                    }
+                }
+                SpecKind::Decimal => {
+                    test_spec_write_size!(Spec::Decimal {
+                        precision: 22,
+                        scale: 2
+                    });
+                    test_spec_write_size!(Spec::Decimal {
+                        precision: 10,
+                        scale: 2
+                    });
+                    test_spec_write_size!(Spec::Decimal {
+                        precision: 77,
+                        scale: 10
+                    });
+                    test_spec_write_size!(Spec::Decimal {
+                        precision: 40,
+                        scale: 10
+                    });
+                }
+                SpecKind::Map => {
+                    test_spec_write_size!(Spec::Map {
+                        size: Size::Variable,
+                        key_spec: Spec::Bool.into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                    test_spec_write_size!(Spec::Map {
+                        size: Size::Fixed(50),
+                        key_spec: Spec::Int(4).into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                }
+                SpecKind::List => {
+                    test_spec_write_size!(Spec::List {
+                        size: Size::Variable,
+                        value_spec: Spec::BinaryFloatingPoint(
+                            InterchangeBinaryFloatingPointFormat::Double
+                        )
+                        .into()
+                    });
+                    test_spec_write_size!(Spec::List {
+                        size: Size::Fixed(32),
+                        value_spec: Spec::Decimal {
+                            precision: 10,
+                            scale: 2
+                        }
+                        .into()
+                    });
+                }
+                SpecKind::String => {
+                    test_spec_write_size!(Spec::String(Size::Variable, StringEncodingFmt::Utf8));
+                    for fmt in StringEncodingFmt::iter() {
+                        test_spec_write_size!(Spec::String(Size::Fixed(45), fmt.clone()));
+                        test_spec_write_size!(Spec::String(Size::Variable, fmt));
+                    }
+                }
+                SpecKind::Bytes => {
+                    test_spec_write_size!(Spec::Bytes(Size::Variable));
+                    test_spec_write_size!(Spec::Bytes(Size::Fixed(1024)));
+                }
+                SpecKind::Optional => {
+                    test_spec_write_size!(Spec::Optional(Spec::Bytes(Size::Variable).into()));
+                    test_spec_write_size!(Spec::Optional(Spec::Int(6).into()));
+                }
+                SpecKind::Name => {
+                    test_spec_write_size!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::List {
+                            size: Size::Fixed(32),
+                            value_spec: Spec::Decimal {
+                                precision: 10,
+                                scale: 2
+                            }
+                            .into()
+                        }
+                        .into()
+                    });
+                    test_spec_write_size!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::Bytes(Size::Variable).into(),
+                    });
+                }
+                SpecKind::Ref => {
+                    test_spec_write_size!(Spec::Ref {
+                        name: "test".into()
+                    });
+                    test_spec_write_size!(Spec::Ref {
+                        name: "asdf".into()
+                    });
+                }
+                SpecKind::Record => {
+                    test_spec_write_size!(Spec::Record(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Tuple => {
+                    test_spec_write_size!(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Enum => {
+                    test_spec_write_size!(Spec::Enum(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Union => {
+                    test_spec_write_size!(Spec::Union(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Void => {
+                    test_spec_write_size!(Spec::Void);
                 }
             }
         }

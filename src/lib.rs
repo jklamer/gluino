@@ -1,3 +1,4 @@
+pub mod compiled_spec;
 mod ser;
 pub mod spec;
 mod util;
