@@ -392,12 +392,6 @@ impl Size {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct DecimalFmt {
-    pub precision: u64,
-    pub scale: u64,
-}
-
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
 pub enum InterchangeBinaryFloatingPointFormat {
     Half,
