@@ -3,15 +3,163 @@ use crate::spec::{
     StringEncodingFmt,
 };
 use std::{
-    collections::{hash_set, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     hash::Hash,
     sync::Arc,
 };
 use strum::{EnumDiscriminants, EnumIter};
 
-struct CompiledSchema {
-    pub named_schema: HashMap<String, Arc<CompiledSchema>>,
-    pub structure: CompiledSpecStructure,
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct CompiledSpec {
+    fingerprint: Vec<u8>,
+    named_schema: HashMap<String, Arc<CompiledSpec>>,
+    structure: CompiledSpecStructure,
+}
+
+impl CompiledSpec {
+    pub fn compile(spec: Spec) -> Result<CompiledSpec, SpecCompileError> {
+        Self::compile_in_context(spec, &mut HashMap::new())
+    }
+
+    pub fn compile_in_context(
+        spec: Spec,
+        context: &mut HashMap<String, Arc<CompiledSpec>>,
+    ) -> Result<CompiledSpec, SpecCompileError> {
+        compile_spec_internal(spec, context, &mut HashSet::new(), &mut HashSet::new())
+    }
+
+    //internal placeholder compiled spec used for name resolution workflows
+    fn invalid_compiled_spec() -> CompiledSpec {
+        CompiledSpec {
+            fingerprint: Vec::with_capacity(0),
+            named_schema: HashMap::with_capacity(0),
+            structure: CompiledSpecStructure::Void,
+        }
+    }
+
+    fn make_spec(
+        context: &HashMap<String, Arc<CompiledSpec>>,
+        structure: &CompiledSpecStructure,
+    ) -> Spec {
+        Self::make_spec_internal(context, &mut HashSet::new(), structure)
+    }
+
+    fn make_spec_internal(
+        context: &HashMap<String, Arc<CompiledSpec>>,
+        names_converted: &mut HashSet<String>,
+        structure: &CompiledSpecStructure,
+    ) -> Spec {
+        match structure {
+            CompiledSpecStructure::Void => Spec::Void,
+            CompiledSpecStructure::Bool => Spec::Bool,
+            CompiledSpecStructure::Uint(n) => Spec::Uint(*n),
+            CompiledSpecStructure::Int(n) => Spec::Int(*n),
+            CompiledSpecStructure::BinaryFloatingPoint(fmt) => {
+                Spec::BinaryFloatingPoint(fmt.clone())
+            }
+            CompiledSpecStructure::DecimalFloatingPoint(fmt) => {
+                Spec::DecimalFloatingPoint(fmt.clone())
+            }
+            CompiledSpecStructure::Decimal(DecimalFmt { precision, scale }) => Spec::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            CompiledSpecStructure::Map {
+                size,
+                key_spec,
+                value_spec,
+            } => Spec::Map {
+                size: size.clone(),
+                key_spec: Box::new(Self::make_spec_internal(
+                    context,
+                    names_converted,
+                    &key_spec.structure,
+                )),
+                value_spec: Box::new(Self::make_spec_internal(
+                    context,
+                    names_converted,
+                    &value_spec.structure,
+                )),
+            },
+            CompiledSpecStructure::List { size, value_spec } => Spec::List {
+                size: size.clone(),
+                value_spec: Box::new(Self::make_spec_internal(
+                    context,
+                    names_converted,
+                    &value_spec.structure,
+                )),
+            },
+            CompiledSpecStructure::String(size, fmt) => Spec::String(size.clone(), fmt.clone()),
+            CompiledSpecStructure::Bytes(size) => Spec::Bytes(size.clone()),
+            CompiledSpecStructure::Optional(s) => Spec::Optional(Box::new(
+                Self::make_spec_internal(context, names_converted, &s.structure),
+            )),
+            CompiledSpecStructure::Name(name) => {
+                if names_converted.contains(name) {
+                    Spec::Ref { name: name.clone() }
+                } else {
+                    names_converted.insert(name.clone());
+                    Spec::Name {
+                        name: name.clone(),
+                        spec: Box::new(Self::make_spec_internal(
+                            context,
+                            names_converted,
+                            &context.get(name).unwrap().structure,
+                        )),
+                    }
+                }
+            }
+            CompiledSpecStructure::Record {
+                fields,
+                field_to_spec,
+                ..
+            } => Spec::Record(
+                fields
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.clone(),
+                            Self::make_spec_internal(
+                                context,
+                                names_converted,
+                                &field_to_spec.get(f).unwrap().structure,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            CompiledSpecStructure::Tuple(compiled_specs) => Spec::Tuple(
+                compiled_specs
+                    .iter()
+                    .map(|cs| Self::make_spec_internal(context, names_converted, &cs.structure))
+                    .collect(),
+            ),
+            CompiledSpecStructure::Enum {
+                variants,
+                variant_to_spec,
+            } => Spec::Enum(
+                variants
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.clone(),
+                            Self::make_spec_internal(
+                                context,
+                                names_converted,
+                                &variant_to_spec.get(f).unwrap().structure,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            CompiledSpecStructure::Union(compiled_specs) => Spec::Union(
+                compiled_specs
+                    .iter()
+                    .map(|cs| Self::make_spec_internal(context, names_converted, &cs.structure))
+                    .collect(),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
@@ -26,28 +174,28 @@ pub enum CompiledSpecStructure {
     Decimal(DecimalFmt),
     Map {
         size: Size,
-        key_spec: Box<CompiledSpecStructure>,
-        value_spec: Box<CompiledSpecStructure>,
+        key_spec: Box<CompiledSpec>,
+        value_spec: Box<CompiledSpec>,
     },
     List {
         size: Size,
-        value_spec: Box<CompiledSpecStructure>,
+        value_spec: Box<CompiledSpec>,
     },
     String(Size, StringEncodingFmt),
     Bytes(Size),
-    Optional(Box<CompiledSpecStructure>),
+    Optional(Box<CompiledSpec>),
     Name(String),
     Record {
         fields: Vec<String>,
-        field_to_spec: HashMap<String, CompiledSpecStructure>,
+        field_to_spec: HashMap<String, CompiledSpec>,
         field_to_index: HashMap<String, usize>,
     },
-    Tuple(Vec<CompiledSpecStructure>),
+    Tuple(Vec<CompiledSpec>),
     Enum {
         variants: Vec<String>,
-        variant_to_spec: HashMap<String, CompiledSpecStructure>,
+        variant_to_spec: HashMap<String, CompiledSpec>,
     },
-    Union(Vec<CompiledSpecStructure>),
+    Union(Vec<CompiledSpec>),
 }
 
 pub enum SpecCompileError {
@@ -55,7 +203,7 @@ pub enum SpecCompileError {
     UndefinedName(String),
     DuplicateRecordFieldNames(HashSet<String>),
     DuplicateRecordVariantNames(HashSet<String>),
-    InfinitelyRecursiveType(HashSet<String>),
+    InfinitelyRecursiveTypes(HashSet<String>),
     IllegalDecimalFmt,
 }
 
@@ -65,178 +213,213 @@ impl From<IllegalDecimalFmt> for SpecCompileError {
     }
 }
 
-impl CompiledSpecStructure {
-    fn compile(
-        spec: Spec,
-        context: &mut HashMap<String, Arc<CompiledSpecStructure>>,
-        non_optional_names: &mut HashSet<String>,
-    ) -> Result<CompiledSpecStructure, SpecCompileError> {
-        match spec {
-            Spec::Bool => Ok(CompiledSpecStructure::Bool),
-            Spec::Uint(n) => Ok(CompiledSpecStructure::Uint(n)),
-            Spec::Int(n) => Ok(CompiledSpecStructure::Int(n)),
-            Spec::BinaryFloatingPoint(fmt) => Ok(CompiledSpecStructure::BinaryFloatingPoint(fmt)),
-            Spec::DecimalFloatingPoint(fmt) => Ok(CompiledSpecStructure::DecimalFloatingPoint(fmt)),
-            Spec::Decimal { precision, scale } => Ok(CompiledSpecStructure::Decimal(
-                DecimalFmt::new(precision, scale)?,
-            )),
-            Spec::Map {
-                size,
-                key_spec,
-                value_spec,
-            } => Ok(CompiledSpecStructure::Map {
-                size,
-                key_spec: box_compile(key_spec, context)?,
-                value_spec: box_compile(value_spec, context)?,
-            }),
-            Spec::List { size, value_spec } => Ok(CompiledSpecStructure::List {
-                size,
-                value_spec: box_compile(value_spec, context)?,
-            }),
-            Spec::String(size, fmt) => Ok(CompiledSpecStructure::String(size, fmt)),
-            Spec::Bytes(size) => Ok(CompiledSpecStructure::Bytes(size)),
-            Spec::Optional(s) => Ok(CompiledSpecStructure::Optional(box_compile(s, context)?)),
-            Spec::Name { name, spec } => {
-                if context.contains_key(&name) {
-                    Err(SpecCompileError::DuplicateName(name.clone()))
-                } else {
-                    context.insert(name.clone(), Arc::new(CompiledSpecStructure::Void));
-                    non_optional_names.insert(name.clone());
-                    let cs = Self::compile(*spec, context, non_optional_names)?;
-                    context.insert(name.clone(), Arc::new(cs));
-                    Ok(CompiledSpecStructure::Name(name))
-                }
+pub(crate) fn compile_spec_internal(
+    spec: Spec,
+    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    non_optional_names: &mut HashSet<String>,
+    names_used: &mut HashSet<String>,
+) -> Result<CompiledSpec, SpecCompileError> {
+    let mut internal_names_used = HashSet::new();
+    let structure =
+        compile_structure_internal(spec, context, non_optional_names, &mut internal_names_used)?;
+    let mut named_schema = HashMap::new();
+    for name in internal_names_used.iter() {
+        named_schema.insert(name.clone(), context.get(name).unwrap().clone());
+    }
+    names_used.extend(internal_names_used.into_iter());
+    Ok(CompiledSpec {
+        // Create fingerprint with names all resolved from context
+        fingerprint: CompiledSpec::make_spec(&named_schema, &structure).to_longform_bytes(),
+        named_schema,
+        structure,
+    })
+}
+
+pub(crate) fn compile_structure_internal(
+    spec: Spec,
+    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    non_optional_names: &mut HashSet<String>,
+    names_used: &mut HashSet<String>,
+) -> Result<CompiledSpecStructure, SpecCompileError> {
+    match spec {
+        Spec::Bool => Ok(CompiledSpecStructure::Bool),
+        Spec::Uint(n) => Ok(CompiledSpecStructure::Uint(n)),
+        Spec::Int(n) => Ok(CompiledSpecStructure::Int(n)),
+        Spec::BinaryFloatingPoint(fmt) => Ok(CompiledSpecStructure::BinaryFloatingPoint(fmt)),
+        Spec::DecimalFloatingPoint(fmt) => Ok(CompiledSpecStructure::DecimalFloatingPoint(fmt)),
+        Spec::Decimal { precision, scale } => Ok(CompiledSpecStructure::Decimal(DecimalFmt::new(
+            precision, scale,
+        )?)),
+        Spec::Map {
+            size,
+            key_spec,
+            value_spec,
+        } => Ok(CompiledSpecStructure::Map {
+            size,
+            key_spec: box_compile(key_spec, context, names_used)?,
+            value_spec: box_compile(value_spec, context, names_used)?,
+        }),
+        Spec::List { size, value_spec } => Ok(CompiledSpecStructure::List {
+            size,
+            value_spec: box_compile(value_spec, context, names_used)?,
+        }),
+        Spec::String(size, fmt) => Ok(CompiledSpecStructure::String(size, fmt)),
+        Spec::Bytes(size) => Ok(CompiledSpecStructure::Bytes(size)),
+        Spec::Optional(s) => Ok(CompiledSpecStructure::Optional(box_compile(
+            s, context, names_used,
+        )?)),
+        Spec::Name { name, spec } => {
+            if context.contains_key(&name) {
+                Err(SpecCompileError::DuplicateName(name.clone()))
+            } else {
+                context.insert(
+                    name.clone(),
+                    Arc::new(CompiledSpec::invalid_compiled_spec()),
+                );
+                non_optional_names.insert(name.clone());
+                let cs = compile_spec_internal(*spec, context, non_optional_names, names_used)?;
+                context.insert(name.clone(), Arc::new(cs));
+                non_optional_names.remove(&name);
+                names_used.insert(name.clone());
+                Ok(CompiledSpecStructure::Name(name))
             }
-            Spec::Ref { name } => {
-                if non_optional_names.contains(&name) {
-                    Err(SpecCompileError::InfinitelyRecursiveType(HashSet::from([
-                        name,
-                    ])))
-                } else if context.contains_key(&name) {
-                    Ok(CompiledSpecStructure::Name(name))
-                } else {
-                    Err(SpecCompileError::UndefinedName(name))
-                }
-            }
-            Spec::Record(fields) => {
-                let field_names = fields
-                    .iter()
-                    .map(|f| &f.0)
-                    .map(|name| name.clone())
-                    .collect();
-                let mut duplicate_name_track = HashSet::new();
-                let field_to_index = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (name, _))| (name.clone(), index))
-                    .collect();
-                let mut field_to_spec = HashMap::with_capacity(fields.capacity());
-                for (field_name, field_spec) in fields {
-                    if field_to_spec
-                        .insert(
-                            field_name.clone(),
-                            Self::compile(field_spec, context, &mut non_optional_names.clone())?,
-                        )
-                        .is_some()
-                    {
-                        duplicate_name_track.insert(field_name);
-                    }
-                }
-                if duplicate_name_track.is_empty() {
-                    Ok(CompiledSpecStructure::Record {
-                        fields: field_names,
-                        field_to_spec,
-                        field_to_index,
-                    })
-                } else {
-                    Err(SpecCompileError::DuplicateRecordFieldNames(
-                        duplicate_name_track,
-                    ))
-                }
-            }
-            Spec::Tuple(fields) => {
-                let mut compiled_fields = Vec::with_capacity(fields.capacity());
-                for field_spec in fields {
-                    compiled_fields.push(Self::compile(
-                        field_spec,
-                        context,
-                        &mut non_optional_names.clone(),
-                    )?)
-                }
-                Ok(CompiledSpecStructure::Tuple(compiled_fields))
-            }
-            Spec::Enum(variants) => {
-                let variant_names: Vec<String> =
-                    variants.iter().map(|v| &v.0).map(|n| n.clone()).collect();
-                let mut all_names: HashSet<String> = variant_names.clone().into_iter().collect();
-                let duplicate_names: HashSet<String> = variant_names
-                    .iter()
-                    .filter(|&n| all_names.remove(n))
-                    .map(|n| n.clone())
-                    .collect();
-                if !duplicate_names.is_empty() {
-                    return Err(SpecCompileError::DuplicateRecordVariantNames(
-                        duplicate_names,
-                    ));
-                }
-                let mut variant_to_spec = HashMap::new();
-                compile_variants_with_loop_checking(
-                    variants,
-                    &mut variant_to_spec,
-                    non_optional_names,
-                    context,
-                )?;
-                Ok(CompiledSpecStructure::Enum {
-                    variants: variant_names,
-                    variant_to_spec,
-                })
-            }
-            Spec::Union(variants) => {
-                let len = variants.len();
-                let variants: Vec<(usize, Spec)> = variants.into_iter().enumerate().collect();
-                let mut variants_to_spec = HashMap::new();
-                compile_variants_with_loop_checking(
-                    variants,
-                    &mut variants_to_spec,
-                    non_optional_names,
-                    context,
-                )?;
-                let compiled_variants = (0..len)
-                    .map(|index| variants_to_spec.remove(&index).unwrap())
-                    .collect();
-                //Todo ENSURE UNIQUE SCHEMA with compiled schema variants
-                Ok(CompiledSpecStructure::Union(compiled_variants))
-            }
-            Spec::Void => Ok(CompiledSpecStructure::Void),
         }
+        Spec::Ref { name } => {
+            if non_optional_names.contains(&name) {
+                Err(SpecCompileError::InfinitelyRecursiveTypes(HashSet::from([
+                    name,
+                ])))
+            } else if context.contains_key(&name) {
+                names_used.insert(name.clone());
+                Ok(CompiledSpecStructure::Name(name))
+            } else {
+                Err(SpecCompileError::UndefinedName(name))
+            }
+        }
+        Spec::Record(fields) => {
+            let field_names = fields
+                .iter()
+                .map(|f| &f.0)
+                .map(|name| name.clone())
+                .collect();
+            let mut duplicate_name_track = HashSet::new();
+            let field_to_index = fields
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _))| (name.clone(), index))
+                .collect();
+            let mut field_to_spec = HashMap::with_capacity(fields.capacity());
+            for (field_name, field_spec) in fields {
+                if field_to_spec
+                    .insert(
+                        field_name.clone(),
+                        compile_spec_internal(field_spec, context, non_optional_names, names_used)?,
+                    )
+                    .is_some()
+                {
+                    duplicate_name_track.insert(field_name);
+                }
+            }
+            if duplicate_name_track.is_empty() {
+                Ok(CompiledSpecStructure::Record {
+                    fields: field_names,
+                    field_to_spec,
+                    field_to_index,
+                })
+            } else {
+                Err(SpecCompileError::DuplicateRecordFieldNames(
+                    duplicate_name_track,
+                ))
+            }
+        }
+        Spec::Tuple(fields) => {
+            let mut compiled_fields = Vec::with_capacity(fields.capacity());
+            for field_spec in fields {
+                compiled_fields.push(compile_spec_internal(
+                    field_spec,
+                    context,
+                    &mut non_optional_names.clone(),
+                    names_used,
+                )?)
+            }
+            Ok(CompiledSpecStructure::Tuple(compiled_fields))
+        }
+        Spec::Enum(variants) => {
+            let variant_names: Vec<String> =
+                variants.iter().map(|v| &v.0).map(|n| n.clone()).collect();
+            let mut all_names: HashSet<String> = variant_names.clone().into_iter().collect();
+            let duplicate_names: HashSet<String> = variant_names
+                .iter()
+                .filter(|&n| all_names.remove(n))
+                .map(|n| n.clone())
+                .collect();
+            if !duplicate_names.is_empty() {
+                return Err(SpecCompileError::DuplicateRecordVariantNames(
+                    duplicate_names,
+                ));
+            }
+            let mut variant_to_spec = HashMap::new();
+            compile_variants_with_loop_checking(
+                variants,
+                &mut variant_to_spec,
+                non_optional_names,
+                context,
+                names_used,
+            )?;
+            Ok(CompiledSpecStructure::Enum {
+                variants: variant_names,
+                variant_to_spec,
+            })
+        }
+        Spec::Union(variants) => {
+            let len = variants.len();
+            let variants: Vec<(usize, Spec)> = variants.into_iter().enumerate().collect();
+            let mut variants_to_spec = HashMap::new();
+            compile_variants_with_loop_checking(
+                variants,
+                &mut variants_to_spec,
+                non_optional_names,
+                context,
+                names_used,
+            )?;
+            let compiled_variants = (0..len)
+                .map(|index| variants_to_spec.remove(&index).unwrap())
+                .collect();
+            //Todo ENSURE UNIQUE SCHEMA with compiled schema variants
+            Ok(CompiledSpecStructure::Union(compiled_variants))
+        }
+        Spec::Void => Ok(CompiledSpecStructure::Void),
     }
 }
 
-// impl TryFrom<Spec> for CompiledSpec {
-//     type Error = SpecCompileError;
-//     fn try_from(spec: Spec) -> Result<CompiledSpec, SpecCompileError> {
-//         CompiledSpec::compile(Resolve::reolvespec, &mut HashMap::new())
-//     }
-// }
+impl TryFrom<Spec> for CompiledSpec {
+    type Error = SpecCompileError;
+    fn try_from(spec: Spec) -> Result<CompiledSpec, SpecCompileError> {
+        CompiledSpec::compile(spec)
+    }
+}
 
 #[inline]
 fn box_compile(
     spec: Box<Spec>,
-    context: &mut HashMap<String, Arc<CompiledSpecStructure>>,
-) -> Result<Box<CompiledSpecStructure>, SpecCompileError> {
-    Ok(Box::new(CompiledSpecStructure::compile(
+    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    names_used: &mut HashSet<String>,
+) -> Result<Box<CompiledSpec>, SpecCompileError> {
+    Ok(Box::new(compile_spec_internal(
         *spec,
         context,
         &mut HashSet::new(),
+        names_used,
     )?))
 }
 
 #[inline]
 fn compile_variants_with_loop_checking<T>(
     variants: Vec<(T, Spec)>,
-    variant_to_spec: &mut HashMap<T, CompiledSpecStructure>,
+    variant_to_spec: &mut HashMap<T, CompiledSpec>,
     non_optional_names: &mut HashSet<String>,
-    context: &mut HashMap<String, Arc<CompiledSpecStructure>>,
+    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    names_used: &mut HashSet<String>,
 ) -> Result<(), SpecCompileError>
 where
     T: Eq + PartialEq + Hash + Clone,
@@ -248,14 +431,15 @@ where
         let mut non_offending_names_for_variant = non_optional_names.clone();
         let mut offending_names_for_variant = HashSet::new();
         let cs = loop {
-            //TODO get rid of cline somehow
-            match CompiledSpecStructure::compile(
+            //TODO get rid of clone somehow
+            match compile_spec_internal(
                 variant_spec.clone(),
                 context,
                 &mut non_offending_names_for_variant,
+                names_used,
             ) {
                 Ok(cs) => break Ok(cs),
-                Err(SpecCompileError::InfinitelyRecursiveType(offending_names)) => {
+                Err(SpecCompileError::InfinitelyRecursiveTypes(offending_names)) => {
                     offending_names.iter().for_each(|offending_name| {
                         non_offending_names_for_variant.remove(offending_name);
                     });
@@ -275,7 +459,7 @@ where
         variant_to_spec.insert(variant_name.clone(), cs);
     }
     if variants_with_non_optional_name_errors.len() == num_variants {
-        Err(SpecCompileError::InfinitelyRecursiveType(
+        Err(SpecCompileError::InfinitelyRecursiveTypes(
             offending_names_for_all_variants,
         ))
     } else {

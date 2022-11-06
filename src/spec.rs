@@ -92,6 +92,14 @@ impl Spec {
         out
     }
 
+    pub(crate) fn to_longform_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(256);
+        if let Err(e) = self.to_longform_bytes_internal(&mut out) {
+            panic!("{}", e.to_string())
+        };
+        out
+    }
+
     pub fn write_as_bytes<W: Write>(&self, w: &mut W) -> Result<usize, io::Error> {
         self.to_bytes_internal(w)
     }
@@ -300,6 +308,99 @@ impl Spec {
             UTF8_STRING => Ok(Spec::String(Size::Variable, StringEncodingFmt::Utf8)),
             flag => Err(SpecParsingError::UnknownSpecFlag(flag)),
         }
+    }
+
+    /// To longform bytes creates serialized view of spec without use of alias bytes for compression
+    /// This byte representation is used for indentification purposes
+    pub(crate) fn to_longform_bytes_internal<W: Write>(
+        &self,
+        out: &mut W,
+    ) -> Result<usize, io::Error> {
+        Ok(match self {
+            Spec::Bool => out.write(&[BOOL])?,
+            Spec::Uint(scale) => out.write(&[UINT, *scale])?,
+            Spec::Int(scale) => out.write(&[INT, *scale])?,
+            Spec::BinaryFloatingPoint(fmt) => out.write(&[BINARY_FP])? + fmt.encode(out)?,
+            Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
+            Spec::Decimal { precision, scale } => {
+                out.write(&[DECIMAL])?
+                    + variable_length_encode_u64(*precision, out)?
+                    + variable_length_encode_u64(*scale, out)?
+            }
+            Spec::Map {
+                size,
+                key_spec,
+                value_spec,
+            } => {
+                out.write(&[MAP])?
+                    + size.encode(out)?
+                    + Spec::to_bytes_internal(key_spec, out)?
+                    + Spec::to_bytes_internal(value_spec, out)?
+            }
+            Spec::List { value_spec, size } => {
+                out.write(&[LIST])? + size.encode(out)? + Spec::to_bytes_internal(value_spec, out)?
+            }
+            Spec::String(size, str_fmt) => {
+                if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
+                    out.write(&[UTF8_STRING])?
+                } else {
+                    out.write(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
+                }
+            }
+            Spec::Bytes(size) => out.write(&[BYTES])? + size.encode(out)?,
+            Spec::Optional(optional_type) => {
+                out.write(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
+            }
+            Spec::Name { name, spec } => {
+                out.write(&[NAME])?
+                    + encode_string_utf8(name, out)?
+                    + Spec::to_bytes_internal(spec, out)?
+            }
+            Spec::Ref { name } => out.write(&[REF])? + encode_string_utf8(name, out)?,
+            Spec::Record(fields) => {
+                out.write(&[RECORD])?
+                    + variable_length_encode_u64(fields.len() as u64, out)?
+                    + fields
+                        .iter()
+                        .map(|(name, spec)| {
+                            combine(
+                                encode_string_utf8(name, out),
+                                Spec::to_bytes_internal(&spec, out),
+                            )
+                        })
+                        .fold(Ok(0usize), combine)?
+            }
+            Spec::Tuple(fields) => {
+                out.write(&[TUPLE])?
+                    + variable_length_encode_u64(fields.len() as u64, out)?
+                    + fields
+                        .iter()
+                        .map(|spec| Spec::to_bytes_internal(&spec, out))
+                        .fold(Ok(0usize), combine)?
+            }
+            Spec::Enum(variants) => {
+                out.write(&[ENUM])?
+                    + variable_length_encode_u64(variants.len() as u64, out)?
+                    + variants
+                        .iter()
+                        .map(|(name, spec)| {
+                            combine(
+                                encode_string_utf8(name, out),
+                                Spec::to_bytes_internal(spec, out),
+                            )
+                        })
+                        .fold(Ok(0usize), combine)?
+            }
+            Spec::Union(variants) => {
+                out.write(&[UNION])?
+                    + variable_length_encode_u64(variants.len() as u64, out)?
+                    + variants
+                        .iter()
+                        .map(|spec| Spec::to_bytes_internal(spec, out))
+                        .fold(Ok(0usize), combine)?
+            }
+            Spec::Void => out.write(&[VOID])?,
+        })
     }
 }
 
