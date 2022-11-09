@@ -757,8 +757,184 @@ mod tests {
                     });
                 }
                 SpecKind::Ref => {
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Box::new(Spec::Record(vec![
+                            ("field1".into(), Spec::Bool),
+                            ("field2".into(), Spec::Int(4)),
+                            (
+                                "field3".into(),
+                                Spec::Optional(
+                                    Spec::Ref {
+                                        name: "test".into()
+                                    }
+                                    .into()
+                                )
+                            )
+                        ]))
+                    });
                     test_spec_serde!(Spec::Ref {
-                        name: "test".into()
+                        name: "asdf".into()
+                    });
+                }
+                SpecKind::Record => {
+                    test_spec_serde!(Spec::Record(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Tuple => {
+                    test_spec_serde!(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Enum => {
+                    test_spec_serde!(Spec::Enum(vec![
+                        ("field1".into(), Spec::Bool),
+                        ("field2".into(), Spec::Int(4))
+                    ]));
+                }
+                SpecKind::Union => {
+                    test_spec_serde!(Spec::Union(vec![Spec::Bool, Spec::Int(4)]));
+                }
+                SpecKind::Void => {
+                    test_spec_serde!(Spec::Void);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_longform_serde() {
+        macro_rules! test_spec_serde {
+            ($spec:expr) => {
+                let s1: Spec = $spec;
+                assert_eq!(
+                    s1,
+                    Spec::read_from_bytes(&mut Cursor::new(s1.to_longform_bytes()))
+                        .expect(format!("Unable to read {}", stringify!($spec)).as_str())
+                );
+            };
+        }
+        for kind in SpecKind::iter() {
+            match kind {
+                SpecKind::Bool => {
+                    test_spec_serde!(Spec::Bool);
+                }
+                SpecKind::Uint => {
+                    for i in 0..=u8::MAX {
+                        test_spec_serde!(Spec::Uint(i));
+                    }
+                }
+                SpecKind::Int => {
+                    for i in 0..=u8::MAX {
+                        test_spec_serde!(Spec::Int(i));
+                    }
+                }
+                SpecKind::BinaryFloatingPoint => {
+                    for bfp in InterchangeBinaryFloatingPointFormat::iter() {
+                        test_spec_serde!(Spec::BinaryFloatingPoint(bfp));
+                    }
+                }
+                SpecKind::DecimalFloatingPoint => {
+                    for dfp in InterchangeDecimalFloatingPointFormat::iter() {
+                        test_spec_serde!(Spec::DecimalFloatingPoint(dfp));
+                    }
+                }
+                SpecKind::Decimal => {
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 22,
+                        scale: 2
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 10,
+                        scale: 2
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 77,
+                        scale: 10
+                    });
+                    test_spec_serde!(Spec::Decimal {
+                        precision: 40,
+                        scale: 10
+                    });
+                }
+                SpecKind::Map => {
+                    test_spec_serde!(Spec::Map {
+                        size: Size::Variable,
+                        key_spec: Spec::Bool.into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                    test_spec_serde!(Spec::Map {
+                        size: Size::Fixed(50),
+                        key_spec: Spec::Int(4).into(),
+                        value_spec: Spec::Int(4).into()
+                    });
+                }
+                SpecKind::List => {
+                    test_spec_serde!(Spec::List {
+                        size: Size::Variable,
+                        value_spec: Spec::BinaryFloatingPoint(
+                            InterchangeBinaryFloatingPointFormat::Double
+                        )
+                        .into()
+                    });
+                    test_spec_serde!(Spec::List {
+                        size: Size::Fixed(32),
+                        value_spec: Spec::Decimal {
+                            precision: 10,
+                            scale: 2
+                        }
+                        .into()
+                    });
+                }
+                SpecKind::String => {
+                    test_spec_serde!(Spec::String(Size::Variable, StringEncodingFmt::Utf8));
+                    for fmt in StringEncodingFmt::iter() {
+                        test_spec_serde!(Spec::String(Size::Fixed(45), fmt.clone()));
+                        test_spec_serde!(Spec::String(Size::Variable, fmt));
+                    }
+                }
+                SpecKind::Bytes => {
+                    test_spec_serde!(Spec::Bytes(Size::Variable));
+                    test_spec_serde!(Spec::Bytes(Size::Fixed(1024)));
+                }
+                SpecKind::Optional => {
+                    test_spec_serde!(Spec::Optional(Spec::Bytes(Size::Variable).into()));
+                    test_spec_serde!(Spec::Optional(Spec::Int(6).into()));
+                }
+                SpecKind::Name => {
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::List {
+                            size: Size::Fixed(32),
+                            value_spec: Spec::Decimal {
+                                precision: 10,
+                                scale: 2
+                            }
+                            .into()
+                        }
+                        .into()
+                    });
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Spec::Bytes(Size::Variable).into(),
+                    });
+                }
+                SpecKind::Ref => {
+                    test_spec_serde!(Spec::Name {
+                        name: "test".into(),
+                        spec: Box::new(Spec::Record(vec![
+                            ("field1".into(), Spec::Bool),
+                            ("field2".into(), Spec::Int(4)),
+                            (
+                                "field3".into(),
+                                Spec::Optional(
+                                    Spec::Ref {
+                                        name: "test".into()
+                                    }
+                                    .into()
+                                )
+                            )
+                        ]))
                     });
                     test_spec_serde!(Spec::Ref {
                         name: "asdf".into()
@@ -907,8 +1083,18 @@ mod tests {
                     });
                 }
                 SpecKind::Ref => {
-                    test_spec_write_size!(Spec::Ref {
-                        name: "test".into()
+                    test_spec_write_size!(Spec::Name {
+                        name: "test".into(),
+                        spec: Box::new(Spec::Record(vec![
+                            ("field1".into(), Spec::Bool),
+                            ("field2".into(), Spec::Int(4)),
+                            (
+                                "field3".into(),
+                                Spec::Optional(Box::new(Spec::Ref {
+                                    name: "test".into()
+                                }))
+                            )
+                        ]))
                     });
                     test_spec_write_size!(Spec::Ref {
                         name: "asdf".into()

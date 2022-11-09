@@ -1,8 +1,12 @@
-use crate::spec::{
-    InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, Spec,
-    StringEncodingFmt,
+use crate::{
+    fingerprint::SpecFingerprint,
+    spec::{
+        InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, Spec,
+        StringEncodingFmt,
+    },
 };
 use std::{
+    borrow::Borrow,
     collections::{HashMap, HashSet},
     hash::Hash,
     sync::Arc,
@@ -11,7 +15,7 @@ use strum::{EnumDiscriminants, EnumIter};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct CompiledSpec {
-    fingerprint: Vec<u8>,
+    fingerprint: SpecFingerprint,
     named_schema: HashMap<String, Arc<CompiledSpec>>,
     structure: CompiledSpecStructure,
 }
@@ -31,13 +35,13 @@ impl CompiledSpec {
     //internal placeholder compiled spec used for name resolution workflows
     fn invalid_compiled_spec() -> CompiledSpec {
         CompiledSpec {
-            fingerprint: Vec::with_capacity(0),
+            fingerprint: SpecFingerprint::new(&Spec::Void),
             named_schema: HashMap::with_capacity(0),
             structure: CompiledSpecStructure::Void,
         }
     }
 
-    fn to_spec(&self) -> Spec {
+    pub(crate) fn to_spec(&self) -> Spec {
         Self::make_spec(&self.named_schema, &self.structure)
     }
 
@@ -208,6 +212,7 @@ pub enum SpecCompileError {
     UndefinedName(String),
     DuplicateRecordFieldNames(HashSet<String>),
     DuplicateEnumVariantNames(HashSet<String>),
+    DuplicateUnionVariantSpecs(Vec<CompiledSpec>),
     InfinitelyRecursiveTypes(HashSet<String>),
     IllegalDecimalFmt,
 }
@@ -233,8 +238,7 @@ pub(crate) fn compile_spec_internal(
     }
     names_used.extend(internal_names_used.into_iter());
     Ok(CompiledSpec {
-        // Create fingerprint with names all resolved from context
-        fingerprint: CompiledSpec::make_spec(&named_schema, &structure).to_longform_bytes(),
+        fingerprint: SpecFingerprint::new(&CompiledSpec::make_spec(&named_schema, &structure)),
         named_schema,
         structure,
     })
@@ -359,9 +363,7 @@ pub(crate) fn compile_structure_internal(
                 .map(|n| n.clone())
                 .collect();
             if !duplicate_names.is_empty() {
-                return Err(SpecCompileError::DuplicateEnumVariantNames(
-                    duplicate_names,
-                ));
+                return Err(SpecCompileError::DuplicateEnumVariantNames(duplicate_names));
             }
             let mut variant_to_spec = HashMap::new();
             compile_variants_with_loop_checking(
@@ -387,11 +389,22 @@ pub(crate) fn compile_structure_internal(
                 context,
                 names_used,
             )?;
-            let compiled_variants = (0..len)
+            let compiled_variants: Vec<CompiledSpec> = (0..len)
                 .map(|index| variants_to_spec.remove(&index).unwrap())
                 .collect();
-            //Todo ENSURE UNIQUE SCHEMA with compiled schema variants
-            Ok(CompiledSpecStructure::Union(compiled_variants))
+            let mut variant_fingerprints: HashSet<&SpecFingerprint> = HashSet::new();
+            let duplicate_variants: Vec<CompiledSpec> = compiled_variants
+                .iter()
+                .filter(|&v| !variant_fingerprints.insert(&v.fingerprint))
+                .map(|v| v.clone())
+                .collect();
+            if duplicate_variants.is_empty() {
+                Ok(CompiledSpecStructure::Union(compiled_variants))
+            } else {
+                Err(SpecCompileError::DuplicateUnionVariantSpecs(
+                    duplicate_variants,
+                ))
+            }
         }
         Spec::Void => Ok(CompiledSpecStructure::Void),
     }
@@ -501,7 +514,8 @@ mod tests {
         macro_rules! test_spec_compile_cycle {
             ($spec:expr) => {
                 let s1: Spec = $spec;
-                let cs1: CompiledSpec = CompiledSpec::compile(s1.clone()).expect("Unable to compile");
+                let cs1: CompiledSpec =
+                    CompiledSpec::compile(s1.clone()).expect("Unable to compile");
                 assert_eq!(s1, cs1.to_spec());
             };
         }
@@ -611,7 +625,19 @@ mod tests {
                     });
                 }
                 SpecKind::Ref => {
-                   // TODO make cyclcical test
+                    test_spec_compile_cycle!(Spec::Name {
+                        name: "test".into(),
+                        spec: Box::new(Spec::Record(vec![
+                            ("field1".into(), Spec::Bool),
+                            ("field2".into(), Spec::Int(4)),
+                            (
+                                "field3".into(),
+                                Spec::Optional(Box::new(Spec::Ref {
+                                    name: "test".into()
+                                }))
+                            )
+                        ]))
+                    });
                 }
                 SpecKind::Record => {
                     test_spec_compile_cycle!(Spec::Record(vec![
