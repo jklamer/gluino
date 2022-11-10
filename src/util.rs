@@ -1,9 +1,5 @@
-use std::{
-    io::{self, Bytes, Read, Write},
-    mem::size_of,
-};
+use std::io::{self, Read, Write};
 
-const SYSTEM_SIZE: usize = size_of::<usize>();
 const MAX_LANG_BYTES: usize = 16;
 const MAX_SYSTEM_BYTES_VLE: usize = MAX_LANG_BYTES * 8 / 7 + 1;
 
@@ -131,18 +127,17 @@ mod tests {
     fn test_veriable_encoding() {
         let mut out = vec![];
         let buffer = &mut out;
-        variable_length_encode_u64(0, buffer);
-        variable_length_encode_u64(127, buffer);
-        variable_length_encode_u64(128, buffer);
-        variable_length_encode_u128(16383, buffer);
-        variable_length_encode_u128(16384, buffer);
-        variable_length_encode_u64(2097151, buffer);
-        variable_length_encode_u128(2097152, buffer);
-        variable_length_encode_u128(268435455, buffer);
-        variable_length_encode_u64(268435456, buffer);
+        variable_length_encode_u64(0, buffer).unwrap();
+        variable_length_encode_u64(127, buffer).unwrap();
+        variable_length_encode_u64(128, buffer).unwrap();
+        variable_length_encode_u128(16383, buffer).unwrap();
+        variable_length_encode_u128(16384, buffer).unwrap();
+        variable_length_encode_u64(2097151, buffer).unwrap();
+        variable_length_encode_u128(2097152, buffer).unwrap();
+        variable_length_encode_u128(268435455, buffer).unwrap();
+        variable_length_encode_u64(268435456, buffer).unwrap();
 
         let mut out = &out[..];
-        //let r = variable_lenth_decode(&mut out).unwrap();
         assert!(matches!(
             variable_lenth_decode(&mut out).unwrap(),
             VariableLengthResult::Respresentable(0usize)
@@ -177,8 +172,8 @@ mod tests {
     fn test_unrepresentable_decoding() {
         let mut out = vec![];
         let buffer = &mut out;
-        variable_length_encode_u64(268435455, buffer);
-        variable_length_encode_u128(268435456, buffer);
+        variable_length_encode_u64(268435455, buffer).unwrap();
+        variable_length_encode_u128(268435456, buffer).unwrap();
         let mut out = &out[..];
         if let VariableLengthResult::<u16>::Unrepresentable(v) =
             variable_lenth_decode(&mut out).unwrap()

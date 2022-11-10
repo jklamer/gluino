@@ -1,23 +1,10 @@
 use std::marker::PhantomData;
 
-use crate::spec::{GluinoSpecType, Spec};
+use crate::{compiled_spec::CompiledSpec};
 
-enum SerializationError {}
-
-struct GluinoSerializer<T: GluinoSpecType> {
-    spec: Spec,
-    _d: PhantomData<T>,
+pub trait GluinoSpecType {
+    fn get_spec() -> CompiledSpec;
 }
-
-impl<T: GluinoSpecType> GluinoSerializer<T> {
-    fn new() -> GluinoSerializer<T> {
-        GluinoSerializer {
-            spec: T::get_spec(),
-            _d: PhantomData::<T>,
-        }
-    }
-}
-
 enum GluinoValue {
     Int8(i8),
     Int16(i16),

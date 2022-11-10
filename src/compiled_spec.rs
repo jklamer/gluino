@@ -21,6 +21,18 @@ pub struct CompiledSpec {
 }
 
 impl CompiledSpec {
+    pub fn fingerprint<'a>(&'a self) -> &'a SpecFingerprint {
+        &self.fingerprint
+    }
+
+    pub fn structure<'a>(&'a self) -> &'a CompiledSpecStructure {
+        &self.structure
+    }
+
+    pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, Arc<CompiledSpec>> {
+        &self.named_schema
+    }
+
     pub fn compile(spec: Spec) -> Result<CompiledSpec, SpecCompileError> {
         Self::compile_in_context(spec, &mut HashMap::new())
     }
@@ -35,7 +47,7 @@ impl CompiledSpec {
     //internal placeholder compiled spec used for name resolution workflows
     fn invalid_compiled_spec() -> CompiledSpec {
         CompiledSpec {
-            fingerprint: SpecFingerprint::new(&Spec::Void),
+            fingerprint: SpecFingerprint::new(&HashMap::new(), &CompiledSpecStructure::Void),
             named_schema: HashMap::with_capacity(0),
             structure: CompiledSpecStructure::Void,
         }
@@ -45,7 +57,8 @@ impl CompiledSpec {
         Self::make_spec(&self.named_schema, &self.structure)
     }
 
-    fn make_spec(
+    //turn the structe of a compiled schema in the provided context into a context free spec
+    pub(crate) fn make_spec(
         context: &HashMap<String, Arc<CompiledSpec>>,
         structure: &CompiledSpecStructure,
     ) -> Spec {
@@ -206,7 +219,9 @@ pub enum CompiledSpecStructure {
     Union(Vec<CompiledSpec>),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
+#[strum_discriminants(derive(EnumIter))]
+#[strum_discriminants(name(SpecCompileErrorKind))]
 pub enum SpecCompileError {
     DuplicateName(String),
     UndefinedName(String),
@@ -238,7 +253,7 @@ pub(crate) fn compile_spec_internal(
     }
     names_used.extend(internal_names_used.into_iter());
     Ok(CompiledSpec {
-        fingerprint: SpecFingerprint::new(&CompiledSpec::make_spec(&named_schema, &structure)),
+        fingerprint: SpecFingerprint::new(&named_schema, &structure),
         named_schema,
         structure,
     })
@@ -661,6 +676,157 @@ mod tests {
                     test_spec_compile_cycle!(Spec::Void);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_compile_error_cases_kinds() {
+        // Create a spec the compiles with every error
+        for kind in SpecCompileErrorKind::iter() {
+            match kind {
+                SpecCompileErrorKind::DuplicateName => vec![
+                    Spec::Record(vec![
+                        (
+                            "field1".into(),
+                            Spec::Name {
+                                name: "name1".into(),
+                                spec: Spec::Int(3).into(),
+                            },
+                        ),
+                        (
+                            "field2".into(),
+                            Spec::Name {
+                                name: "name1".into(),
+                                spec: Spec::BinaryFloatingPoint(
+                                    InterchangeBinaryFloatingPointFormat::Double,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                    Spec::Record(vec![
+                        (
+                            "field1".into(),
+                            Spec::Record(vec![(
+                                "inner field 1".into(),
+                                Spec::Name {
+                                    name: "name1".into(),
+                                    spec: Spec::Int(3).into(),
+                                },
+                            )]),
+                        ),
+                        (
+                            "field2".into(),
+                            Spec::Name {
+                                name: "name1".into(),
+                                spec: Spec::BinaryFloatingPoint(
+                                    InterchangeBinaryFloatingPointFormat::Double,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                ],
+                SpecCompileErrorKind::UndefinedName => vec![
+                    Spec::Ref {
+                        name: "any name here".into(),
+                    },
+                    Spec::Enum(vec![
+                        (
+                            "variant1".into(),
+                            Spec::Ref {
+                                name: "a name".into(),
+                            },
+                        ),
+                        (
+                            "variant2".into(),
+                            Spec::Name {
+                                name: "a name".into(),
+                                spec: Spec::DecimalFloatingPoint(
+                                    InterchangeDecimalFloatingPointFormat::Dec128,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                ],
+                SpecCompileErrorKind::DuplicateRecordFieldNames => vec![Spec::Record(vec![
+                    ("field name".into(), Spec::Bool),
+                    ("field name".into(), Spec::Int(5)),
+                ])],
+                SpecCompileErrorKind::DuplicateEnumVariantNames => vec![Spec::Enum(vec![
+                    ("variant name".into(), Spec::Bool),
+                    ("variant name".into(), Spec::Int(5)),
+                ])],
+                SpecCompileErrorKind::DuplicateUnionVariantSpecs => vec![
+                    Spec::Union(vec![
+                        Spec::Name {
+                            name: "name".into(),
+                            spec: Spec::Bytes(Size::Variable).into(),
+                        },
+                        Spec::Ref {
+                            name: "name".into(),
+                        },
+                    ]),
+                    Spec::Union(vec![Spec::Bool, Spec::Bool]),
+                ],
+                SpecCompileErrorKind::InfinitelyRecursiveTypes => vec![
+                    Spec::Name {
+                        name: "outer".into(),
+                        spec: Spec::Name {
+                            name: "inner".into(),
+                            spec: Spec::Enum(vec![
+                                (
+                                    "variant 1".into(),
+                                    Spec::Ref {
+                                        name: "outer".into(),
+                                    },
+                                ),
+                                (
+                                    "variant 2".into(),
+                                    Spec::Ref {
+                                        name: "inner".into(),
+                                    },
+                                ),
+                            ])
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    Spec::Name {
+                        name: "name".into(),
+                        spec: Spec::Record(vec![
+                            ("field 1".into(), Spec::Bool),
+                            (
+                                "field 2".into(),
+                                Spec::Ref {
+                                    name: "name".into(),
+                                },
+                            ),
+                        ])
+                        .into(),
+                    },
+                ],
+                SpecCompileErrorKind::IllegalDecimalFmt => vec![Spec::Decimal {
+                    precision: 3,
+                    scale: 4,
+                }],
+            }
+            .into_iter()
+            .for_each(|s| {
+                let error = s.compile().map_err(|e| SpecCompileErrorKind::from(e));
+                match error {
+                    Ok(compiled_spec) => {
+                        panic!(
+                            "Illegal spec compiled successfully into {:?}",
+                            compiled_spec
+                        )
+                    }
+                    Err(compiled_error_kind) => {
+                        assert_eq!(kind, compiled_error_kind)
+                    }
+                }
+            });
         }
     }
 }

@@ -5,11 +5,10 @@ use std::{
 };
 use strum_macros::{EnumDiscriminants, EnumIter};
 
-use crate::util::{self, variable_length_decode_u64, variable_length_encode_u64};
-
-pub trait GluinoSpecType {
-    fn get_spec() -> Spec;
-}
+use crate::{
+    compiled_spec::{CompiledSpec, SpecCompileError},
+    util::{self, variable_length_decode_u64, variable_length_encode_u64},
+};
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(SpecKind))]
@@ -84,6 +83,10 @@ const DOUBLE_FP: u8 = 9;
 const UTF8_STRING: u8 = 10;
 
 impl Spec {
+    pub fn compile(self) -> Result<CompiledSpec, SpecCompileError> {
+        CompiledSpec::compile(self)
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(256);
         if let Err(e) = self.to_bytes_internal(&mut out) {
