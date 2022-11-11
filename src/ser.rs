@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::{compiled_spec::CompiledSpec};
+use crate::compiled_spec::CompiledSpec;
 
 pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
 }
 enum GluinoValue {
     /// native to rust
-    /// simple types 
+    /// simple types
     Int8(i8),
     Int16(i16),
     Int32(i32),
@@ -32,7 +32,6 @@ enum GluinoValue {
     Enum(u64, Box<GluinoValue>),
     Union(u64, Box<GluinoValue>),
     //non native
-  
 }
 
 // impl<T: GluinoSpecType> serde::Serializer for GluinoSerializer<T> {
