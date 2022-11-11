@@ -6,7 +6,6 @@ use crate::{
     },
 };
 use std::{
-    borrow::Borrow,
     collections::{HashMap, HashSet},
     hash::Hash,
     sync::Arc,

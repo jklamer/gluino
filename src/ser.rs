@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::collections::HashMap;
 
 use crate::{compiled_spec::CompiledSpec};
 
@@ -6,6 +6,8 @@ pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
 }
 enum GluinoValue {
+    /// native to rust
+    /// simple types 
     Int8(i8),
     Int16(i16),
     Int32(i32),
@@ -15,6 +17,22 @@ enum GluinoValue {
     Uint16(u16),
     Uint32(u32),
     Uint64(u64),
+    Uint128(u128),
+    Bool(bool),
+    String(String),
+    Bytes(Vec<u8>),
+    Float(f32),
+    Double(f64),
+    /// Compound
+    Optional(Option<Box<GluinoValue>>),
+    List(Vec<GluinoValue>),
+    Map(HashMap<GluinoValue, GluinoValue>),
+    Record(Vec<GluinoValue>),
+    Tuple(Vec<GluinoValue>),
+    Enum(u64, Box<GluinoValue>),
+    Union(u64, Box<GluinoValue>),
+    //non native
+  
 }
 
 // impl<T: GluinoSpecType> serde::Serializer for GluinoSerializer<T> {
