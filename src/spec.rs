@@ -791,52 +791,43 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        macro_rules! test_spec_serde {
-            ($spec:expr) => {
-                let s1: Spec = $spec;
-                assert_eq!(
-                    s1,
-                    Spec::read_from_bytes(&mut Cursor::new(s1.to_bytes()))
-                        .expect(format!("Unable to read {}", stringify!($spec)).as_str())
-                );
-            };
+        fn test_spec_serde(spec: Spec) {
+            assert_eq!(
+                spec,
+                Spec::read_from_bytes(&mut Cursor::new(spec.to_bytes()))
+                    .expect(format!("Unable to read {:?}", spec).as_str())
+            );
         }
         for spec in get_all_kinds_spec() {
-            test_spec_serde!(spec);
+            test_spec_serde(spec);
         }
     }
 
     #[test]
     fn test_longform_serde() {
-        macro_rules! test_spec_longform_serde {
-            ($spec:expr) => {
-                let s1: Spec = $spec;
-                assert_eq!(
-                    s1,
-                    Spec::read_from_bytes(&mut Cursor::new(s1.to_longform_bytes()))
-                        .expect(format!("Unable to read {}", stringify!($spec)).as_str())
-                );
-            };
+        fn test_spec_longform_serde(spec: Spec) {
+            assert_eq!(
+                spec,
+                Spec::read_from_bytes(&mut Cursor::new(spec.to_longform_bytes()))
+                    .expect(format!("Unable to read {:?}", spec).as_str())
+            );
         }
         for spec in get_all_kinds_spec() {
-            test_spec_longform_serde!(spec);
+            test_spec_longform_serde(spec);
         }
     }
 
     #[test]
     fn test_write_size() {
-        macro_rules! test_spec_write_size {
-            ($spec:expr) => {
-                let s1: Spec = $spec;
-                let mut v = Vec::new();
-                let reported_size = s1.write_as_bytes(&mut v).expect(
-                    format!("Unable to write to bytes. Spec: {}", stringify!($spec)).as_str(),
-                );
-                assert_eq!(v.len(), reported_size);
-            };
+        fn test_spec_write_size(spec: Spec) {
+            let mut v = Vec::new();
+            let reported_size = spec
+                .write_as_bytes(&mut v)
+                .expect(format!("Unable to write to bytes. Spec: {}", stringify!($spec)).as_str());
+            assert_eq!(v.len(), reported_size);
         }
         for spec in get_all_kinds_spec() {
-            test_spec_write_size!(spec);
+            test_spec_write_size(spec);
         }
     }
 
