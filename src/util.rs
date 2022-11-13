@@ -32,6 +32,12 @@ pub fn variable_length_encode_u128<W: Write>(mut z: u128, out: &mut W) -> Result
     out.write(&encoding[0..=n])
 }
 
+pub fn variable_length_decode_u128<R: Read>(
+    input: &mut R,
+) -> Result<VariableLengthResult<u128>, VariableLengthDecodingError> {
+    variable_lenth_decode(input)
+}
+
 pub trait VariableLengthDecodingTarget {
     const BYTE_LEN: usize;
     fn from_le_bytes(b: &[u8]) -> Self;
@@ -83,8 +89,9 @@ pub fn variable_lenth_decode<R: Read, B: VariableLengthDecodingTarget>(
                 read_buffer[tracking_index] &= 0x7F;
                 if tracking_index > 0 {
                     //compact bytes
-                    read_buffer[tracking_index - 1] |=
-                        read_buffer[tracking_index] << (8 - shift_offset & 0x07);
+                    read_buffer[tracking_index - 1] |= read_buffer[tracking_index]
+                        .checked_shl(8 - (shift_offset as u32 & 0x07))
+                        .unwrap_or(0);
                     read_buffer[tracking_index] >>= shift_offset & 0x07;
                 }
                 shift_offset += 1;
@@ -121,6 +128,9 @@ pub enum VariableLengthDecodingError {
 
 #[cfg(test)]
 mod tests {
+
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -193,5 +203,24 @@ mod tests {
         } else {
             assert!(false);
         }
+    }
+
+    #[test]
+    fn test_way_too_big() {
+        match variable_length_decode_u128(&mut Cursor::new(&[
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0x01,
+        ])) {
+            Ok(VariableLengthResult::Respresentable(n)) => {
+                assert!(false, "Should overflow")
+            }
+            Ok(VariableLengthResult::Unrepresentable(_)) => {
+                assert!(true);
+            }
+            Err(e) => {
+                assert!(true);
+            }
+        };
     }
 }

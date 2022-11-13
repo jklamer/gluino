@@ -520,161 +520,18 @@ impl DecimalFmt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::SpecKind;
+    use crate::{spec::SpecKind, test_utils::get_all_kinds_spec};
     use strum::IntoEnumIterator;
 
     #[test]
     fn test_compile_uncompile() {
-        macro_rules! test_spec_compile_cycle {
-            ($spec:expr) => {
-                let s1: Spec = $spec;
-                let cs1: CompiledSpec =
-                    CompiledSpec::compile(s1.clone()).expect("Unable to compile");
-                assert_eq!(s1, cs1.to_spec());
-            };
+        fn test_spec_compile_cycle(spec: Spec) {
+            let s1: Spec = spec;
+            let cs1: CompiledSpec = CompiledSpec::compile(s1.clone()).expect("Unable to compile");
+            assert_eq!(s1, cs1.to_spec());
         }
-        for kind in SpecKind::iter() {
-            match kind {
-                SpecKind::Bool => {
-                    test_spec_compile_cycle!(Spec::Bool);
-                }
-                SpecKind::Uint => {
-                    for i in 0..=u8::MAX {
-                        test_spec_compile_cycle!(Spec::Uint(i));
-                    }
-                }
-                SpecKind::Int => {
-                    for i in 0..=u8::MAX {
-                        test_spec_compile_cycle!(Spec::Int(i));
-                    }
-                }
-                SpecKind::BinaryFloatingPoint => {
-                    for bfp in InterchangeBinaryFloatingPointFormat::iter() {
-                        test_spec_compile_cycle!(Spec::BinaryFloatingPoint(bfp));
-                    }
-                }
-                SpecKind::DecimalFloatingPoint => {
-                    for dfp in InterchangeDecimalFloatingPointFormat::iter() {
-                        test_spec_compile_cycle!(Spec::DecimalFloatingPoint(dfp));
-                    }
-                }
-                SpecKind::Decimal => {
-                    test_spec_compile_cycle!(Spec::Decimal {
-                        precision: 22,
-                        scale: 2
-                    });
-                    test_spec_compile_cycle!(Spec::Decimal {
-                        precision: 10,
-                        scale: 2
-                    });
-                    test_spec_compile_cycle!(Spec::Decimal {
-                        precision: 77,
-                        scale: 10
-                    });
-                    test_spec_compile_cycle!(Spec::Decimal {
-                        precision: 40,
-                        scale: 10
-                    });
-                }
-                SpecKind::Map => {
-                    test_spec_compile_cycle!(Spec::Map {
-                        size: Size::Variable,
-                        key_spec: Spec::Bool.into(),
-                        value_spec: Spec::Int(4).into()
-                    });
-                    test_spec_compile_cycle!(Spec::Map {
-                        size: Size::Fixed(50),
-                        key_spec: Spec::Int(4).into(),
-                        value_spec: Spec::Int(4).into()
-                    });
-                }
-                SpecKind::List => {
-                    test_spec_compile_cycle!(Spec::List {
-                        size: Size::Variable,
-                        value_spec: Spec::BinaryFloatingPoint(
-                            InterchangeBinaryFloatingPointFormat::Double
-                        )
-                        .into()
-                    });
-                    test_spec_compile_cycle!(Spec::List {
-                        size: Size::Fixed(32),
-                        value_spec: Spec::Decimal {
-                            precision: 10,
-                            scale: 2
-                        }
-                        .into()
-                    });
-                }
-                SpecKind::String => {
-                    test_spec_compile_cycle!(Spec::String(Size::Variable, StringEncodingFmt::Utf8));
-                    for fmt in StringEncodingFmt::iter() {
-                        test_spec_compile_cycle!(Spec::String(Size::Fixed(45), fmt.clone()));
-                        test_spec_compile_cycle!(Spec::String(Size::Variable, fmt));
-                    }
-                }
-                SpecKind::Bytes => {
-                    test_spec_compile_cycle!(Spec::Bytes(Size::Variable));
-                    test_spec_compile_cycle!(Spec::Bytes(Size::Fixed(1024)));
-                }
-                SpecKind::Optional => {
-                    test_spec_compile_cycle!(Spec::Optional(Spec::Bytes(Size::Variable).into()));
-                    test_spec_compile_cycle!(Spec::Optional(Spec::Int(6).into()));
-                }
-                SpecKind::Name => {
-                    test_spec_compile_cycle!(Spec::Name {
-                        name: "test".into(),
-                        spec: Spec::List {
-                            size: Size::Fixed(32),
-                            value_spec: Spec::Decimal {
-                                precision: 10,
-                                scale: 2
-                            }
-                            .into()
-                        }
-                        .into()
-                    });
-                    test_spec_compile_cycle!(Spec::Name {
-                        name: "test".into(),
-                        spec: Spec::Bytes(Size::Variable).into(),
-                    });
-                }
-                SpecKind::Ref => {
-                    test_spec_compile_cycle!(Spec::Name {
-                        name: "test".into(),
-                        spec: Box::new(Spec::Record(vec![
-                            ("field1".into(), Spec::Bool),
-                            ("field2".into(), Spec::Int(4)),
-                            (
-                                "field3".into(),
-                                Spec::Optional(Box::new(Spec::Ref {
-                                    name: "test".into()
-                                }))
-                            )
-                        ]))
-                    });
-                }
-                SpecKind::Record => {
-                    test_spec_compile_cycle!(Spec::Record(vec![
-                        ("field1".into(), Spec::Bool),
-                        ("field2".into(), Spec::Int(4))
-                    ]));
-                }
-                SpecKind::Tuple => {
-                    test_spec_compile_cycle!(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]));
-                }
-                SpecKind::Enum => {
-                    test_spec_compile_cycle!(Spec::Enum(vec![
-                        ("field1".into(), Spec::Bool),
-                        ("field2".into(), Spec::Int(4))
-                    ]));
-                }
-                SpecKind::Union => {
-                    test_spec_compile_cycle!(Spec::Union(vec![Spec::Bool, Spec::Int(4)]));
-                }
-                SpecKind::Void => {
-                    test_spec_compile_cycle!(Spec::Void);
-                }
-            }
+        for spec in get_all_kinds_spec() {
+            test_spec_compile_cycle(spec)
         }
     }
 

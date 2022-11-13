@@ -84,6 +84,9 @@ const SINGLE_FP: u8 = 8;
 const DOUBLE_FP: u8 = 9;
 const UTF8_STRING: u8 = 10;
 
+// never used  ( except for testing)
+const NEVER_USED: u8 = 0xFF;
+
 impl Spec {
     pub fn compile(self) -> Result<CompiledSpec, SpecCompileError> {
         CompiledSpec::compile(self)
@@ -445,7 +448,9 @@ fn next_byte<R: Read>(input: &mut R) -> Result<u8, SpecParsingError> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, EnumDiscriminants)]
+#[strum_discriminants(name(SpecParsingErrorKind))]
+#[strum_discriminants(derive(EnumIter))]
 pub enum SpecParsingError {
     ReadError(io::Error),
     UnexpectedEndOfBytes,
@@ -454,7 +459,6 @@ pub enum SpecParsingError {
     UnknownDecimalFormatFlag(u8),
     UnknownStringFormatFlag(u8),
     UnknownSizeFormatFlag(u8),
-    VariableLengthDecodingError(util::VariableLengthDecodingError),
     IntegerOverflowVariableLengthDecodingError(Vec<u8>),
 }
 
@@ -473,7 +477,7 @@ impl From<util::VariableLengthDecodingError> for SpecParsingError {
             VariableLengthDecodingError::IncompleteVariableLengthEncoding => {
                 SpecParsingError::UnexpectedEndOfBytes
             }
-            _ => SpecParsingError::VariableLengthDecodingError(e),
+            VariableLengthDecodingError::IoError(e) => SpecParsingError::ReadError(e),
         }
     }
 }
@@ -645,149 +649,12 @@ fn combine(a: Result<usize, io::Error>, b: Result<usize, io::Error>) -> Result<u
 #[cfg(test)]
 mod tests {
 
-    use crate::spec;
-
-    use super::*;
-    use std::{io::Cursor, iter};
     use strum::IntoEnumIterator;
 
-    fn get_all_kinds_spec() -> Vec<Spec> {
-        let mut specs = Vec::with_capacity(256);
-        for spec_kind in SpecKind::iter() {
-            for spec in get_valid_specs_for_kind(spec_kind) {
-                specs.push(spec);
-            }
-        }
-        assert!(!specs.is_empty());
-        specs
-    }
+    use crate::test_utils::get_all_kinds_spec;
 
-    fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<Item = Spec>> {
-        match spec_kind {
-            SpecKind::Bool => Box::new(iter::once(Spec::Bool)),
-            SpecKind::Uint => Box::new((0..=u8::MAX).map(|n| Spec::Uint(n)).into_iter()),
-            SpecKind::Int => Box::new((0..=u8::MAX).map(|n| Spec::Int(n)).into_iter()),
-            SpecKind::BinaryFloatingPoint => Box::new(
-                InterchangeBinaryFloatingPointFormat::iter()
-                    .map(|bfp| Spec::BinaryFloatingPoint(bfp)),
-            ),
-            SpecKind::DecimalFloatingPoint => Box::new(
-                InterchangeDecimalFloatingPointFormat::iter()
-                    .map(|dfp| Spec::DecimalFloatingPoint(dfp)),
-            ),
-            SpecKind::Decimal => Box::new(
-                vec![
-                    Spec::Decimal {
-                        precision: 22,
-                        scale: 2,
-                    },
-                    Spec::Decimal {
-                        precision: 10,
-                        scale: 2,
-                    },
-                    Spec::Decimal {
-                        precision: 77,
-                        scale: 10,
-                    },
-                    Spec::Decimal {
-                        precision: 40,
-                        scale: 10,
-                    },
-                ]
-                .into_iter(),
-            ),
-            SpecKind::Map => Box::new(
-                vec![
-                    Spec::Map {
-                        size: Size::Variable,
-                        key_spec: Spec::Bool.into(),
-                        value_spec: Spec::Int(4).into(),
-                    },
-                    Spec::Map {
-                        size: Size::Fixed(50),
-                        key_spec: Spec::Int(4).into(),
-                        value_spec: Spec::Int(4).into(),
-                    },
-                ]
-                .into_iter(),
-            ),
-            SpecKind::List => Box::new(
-                vec![
-                    Spec::List {
-                        size: Size::Variable,
-                        value_spec: Spec::BinaryFloatingPoint(
-                            InterchangeBinaryFloatingPointFormat::Double,
-                        )
-                        .into(),
-                    },
-                    Spec::List {
-                        size: Size::Fixed(32),
-                        value_spec: Spec::Decimal {
-                            precision: 10,
-                            scale: 2,
-                        }
-                        .into(),
-                    },
-                ]
-                .into_iter(),
-            ),
-            SpecKind::String => Box::new(
-                iter::once(Spec::String(Size::Variable, StringEncodingFmt::Utf8))
-                    .chain(StringEncodingFmt::iter().map(|fmt| Spec::String(Size::Fixed(45), fmt)))
-                    .chain(StringEncodingFmt::iter().map(|fmt| Spec::String(Size::Variable, fmt))),
-            ),
-            SpecKind::Bytes => Box::new(
-                iter::once(Spec::Bytes(Size::Variable))
-                    .chain(iter::once(Spec::Bytes(Size::Fixed(1024)))),
-            ),
-            SpecKind::Optional => Box::new(
-                iter::once(Spec::Optional(Spec::Bytes(Size::Variable).into()))
-                    .chain(iter::once(Spec::Optional(Spec::Int(6).into()))),
-            ),
-            SpecKind::Name => Box::new(
-                iter::once(Spec::Name {
-                    name: "test".into(),
-                    spec: Spec::List {
-                        size: Size::Fixed(32),
-                        value_spec: Spec::Decimal {
-                            precision: 10,
-                            scale: 2,
-                        }
-                        .into(),
-                    }
-                    .into(),
-                })
-                .chain(iter::once(Spec::Name {
-                    name: "test".into(),
-                    spec: Spec::Bytes(Size::Variable).into(),
-                })),
-            ),
-            SpecKind::Ref => Box::new(iter::once(Spec::Name {
-                name: "test".into(),
-                spec: Box::new(Spec::Record(vec![
-                    ("field1".into(), Spec::Bool),
-                    ("field2".into(), Spec::Int(4)),
-                    (
-                        "field3".into(),
-                        Spec::Optional(Box::new(Spec::Ref {
-                            name: "test".into(),
-                        })),
-                    ),
-                ])),
-            })),
-            SpecKind::Record => Box::new(iter::once(Spec::Record(vec![
-                ("field1".into(), Spec::Bool),
-                ("field2".into(), Spec::Int(4)),
-            ]))),
-            SpecKind::Tuple => Box::new(iter::once(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]))),
-            SpecKind::Enum => Box::new(iter::once(Spec::Enum(vec![
-                ("field1".into(), Spec::Bool),
-                ("field2".into(), Spec::Int(4)),
-            ]))),
-            SpecKind::Union => Box::new(iter::once(Spec::Union(vec![Spec::Bool, Spec::Int(4)]))),
-            SpecKind::Void => Box::new(iter::once(Spec::Void)),
-        }
-    }
+    use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_serde() {
@@ -832,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_EOF_deserialization() {
+    fn test_eof_deserialization() {
         fn test_eof_exception(spec: Spec) {
             let mut v = Vec::new();
             spec.write_as_bytes(&mut v)
@@ -854,6 +721,64 @@ mod tests {
 
         for spec in get_all_kinds_spec() {
             test_eof_exception(spec);
+        }
+    }
+
+    #[test]
+    fn test_spec_parsing_errors() {
+        for parsing_error_kind in SpecParsingErrorKind::iter() {
+            match parsing_error_kind {
+                SpecParsingErrorKind::ReadError => {
+                    //todo find good way to test.
+                    Vec::<Result<Spec, SpecParsingError>>::with_capacity(0)
+                }
+                SpecParsingErrorKind::UnexpectedEndOfBytes => {
+                    //covered in own test case
+                    Vec::<Result<Spec, SpecParsingError>>::with_capacity(0)
+                }
+                SpecParsingErrorKind::UnknownSpecFlag => {
+                    vec![Spec::read_from_bytes(&mut Cursor::new(&[NEVER_USED]))]
+                }
+                SpecParsingErrorKind::UnknownBinaryFormatFlag => {
+                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
+                        BINARY_FP, NEVER_USED,
+                    ]))]
+                }
+                SpecParsingErrorKind::UnknownDecimalFormatFlag => {
+                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
+                        DECIMAL_FP, NEVER_USED,
+                    ]))]
+                }
+                SpecParsingErrorKind::UnknownStringFormatFlag => {
+                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
+                        STRING, 0x01, NEVER_USED,
+                    ]))]
+                }
+                SpecParsingErrorKind::UnknownSizeFormatFlag => {
+                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
+                        BYTES, NEVER_USED,
+                    ]))]
+                }
+                SpecParsingErrorKind::IntegerOverflowVariableLengthDecodingError => {
+                    vec![
+                        //way too big a size
+                        Spec::read_from_bytes(&mut Cursor::new(&[
+                            BYTES, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0x01,
+                        ])),
+                    ]
+                }
+            }
+            .into_iter()
+            .map(|res| res.map_err(SpecParsingErrorKind::from))
+            .for_each(|res| match res {
+                Ok(unexpected_spec) => {
+                    assert!(false, "Unexpectedly parsed into {:?}", unexpected_spec)
+                }
+                Err(e) => {
+                    assert_eq!(e, parsing_error_kind, "Unexpeted Error Kind")
+                }
+            })
         }
     }
 }
