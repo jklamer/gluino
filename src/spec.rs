@@ -517,7 +517,7 @@ pub enum InterchangeBinaryFloatingPointFormat {
 }
 
 impl InterchangeBinaryFloatingPointFormat {
-    fn significand_bits(&self) -> u64 {
+    pub fn significand_bits(&self) -> u64 {
         match self {
             InterchangeBinaryFloatingPointFormat::Half => 11,
             InterchangeBinaryFloatingPointFormat::Single => 24,
@@ -527,7 +527,7 @@ impl InterchangeBinaryFloatingPointFormat {
         }
     }
 
-    fn exponent_bits(&self) -> u64 {
+    pub fn exponent_bits(&self) -> u64 {
         match self {
             InterchangeBinaryFloatingPointFormat::Half => 5,
             InterchangeBinaryFloatingPointFormat::Single => 8,
@@ -571,7 +571,7 @@ pub enum InterchangeDecimalFloatingPointFormat {
 }
 
 impl InterchangeDecimalFloatingPointFormat {
-    fn significand_bits(&self) -> u64 {
+    pub fn significand_bits(&self) -> u64 {
         match self {
             InterchangeDecimalFloatingPointFormat::Dec32 => 7,
             InterchangeDecimalFloatingPointFormat::Dec64 => 16,
@@ -579,11 +579,19 @@ impl InterchangeDecimalFloatingPointFormat {
         }
     }
 
-    fn decimal_digits(&self) -> u64 {
+    pub fn decimal_digits(&self) -> u64 {
         match self {
             InterchangeDecimalFloatingPointFormat::Dec32 => 7,
             InterchangeDecimalFloatingPointFormat::Dec64 => 16,
             InterchangeDecimalFloatingPointFormat::Dec128 => 34,
+        }
+    }
+
+    pub(crate) fn minimum_byes_needed(&self) -> usize {
+        match self {
+            InterchangeDecimalFloatingPointFormat::Dec32 => 2,
+            InterchangeDecimalFloatingPointFormat::Dec64 => 4,
+            InterchangeDecimalFloatingPointFormat::Dec128 => 8,
         }
     }
 
