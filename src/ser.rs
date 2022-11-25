@@ -1,15 +1,10 @@
 use std::{
-    borrow::Borrow,
-    collections::HashMap,
-    io::{self, Write},
-    rc::{Rc, Weak},
-    sync::Arc,
+    io::{self, Write}
 };
 
 use strum::EnumDiscriminants;
 use strum_macros::EnumIter;
 
-use crate::spec::Size::Fixed;
 use crate::{
     compiled_spec::{CompiledSpec, CompiledSpecStructure},
     spec::{InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat},

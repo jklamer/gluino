@@ -180,6 +180,57 @@ impl CompiledSpec {
             ),
         }
     }
+
+    fn push_down_resolved(&mut self, name: &String, resolved_spec: &Arc<CompiledSpec>) {
+        if self.named_schema.contains_key(name) {
+            self.named_schema.insert(name.clone(), resolved_spec.clone());
+        }
+
+        match &mut self.structure {
+            CompiledSpecStructure::Map {ref mut key_spec, ref mut value_spec , ..} => {
+                key_spec.push_down_resolved(name, resolved_spec);
+                value_spec.push_down_resolved(name, resolved_spec);
+            },
+            CompiledSpecStructure::List {ref mut value_spec, ..} => {
+                value_spec.push_down_resolved(name, resolved_spec);
+            },
+            CompiledSpecStructure::Optional(ref mut spec) => {
+                spec.push_down_resolved(name, resolved_spec);
+            },
+            CompiledSpecStructure::Record { ref mut field_to_spec , ..} => {
+                for (_, spec) in field_to_spec.iter_mut() {
+                    spec.push_down_resolved(name, resolved_spec);
+                }
+            },
+            CompiledSpecStructure::Tuple(ref mut fields) => {
+                for field in fields.iter_mut() {
+                    field.push_down_resolved(name, resolved_spec);
+                }
+            },
+            CompiledSpecStructure::Enum { ref mut variant_to_spec, ..} => {
+                for (_, spec) in variant_to_spec.iter_mut() {
+                    spec.push_down_resolved(name, resolved_spec);
+                }
+            },
+            CompiledSpecStructure::Union(ref mut variants) => {
+                for variant in variants.iter_mut() {
+                    variant.push_down_resolved(name, resolved_spec);
+                }
+            },
+            CompiledSpecStructure::Name(_) => {
+                ()
+            }
+            CompiledSpecStructure::Void |
+            CompiledSpecStructure::Bool |
+            CompiledSpecStructure::Uint(_) |
+            CompiledSpecStructure::Int(_) |
+            CompiledSpecStructure::BinaryFloatingPoint(_) |
+            CompiledSpecStructure::DecimalFloatingPoint(_) |
+            CompiledSpecStructure::Decimal(_) |
+            CompiledSpecStructure::String(_, _) |
+            CompiledSpecStructure::Bytes(_) => {()}
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
@@ -301,7 +352,9 @@ pub(crate) fn compile_structure_internal(
                 );
                 non_optional_names.insert(name.clone());
                 let cs = compile_spec_internal(*spec, context, non_optional_names, names_used)?;
-                context.insert(name.clone(), Arc::new(cs));
+                let mut cs = Arc::new(cs);
+                context.insert(name.clone(), cs.clone());
+                cs.push_down_resolved(&name, &cs);
                 non_optional_names.remove(&name);
                 names_used.insert(name.clone());
                 Ok(CompiledSpecStructure::Name(name))
@@ -684,5 +737,24 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[test]
+    fn test_recursion() {
+        let cs = CompiledSpec::compile(Spec::Name { 
+            name: "test".into(), 
+            spec: Box::new(Spec::Tuple(
+                vec![Spec::Int(3),
+                 Spec::Optional(Box::new(Spec::Ref{name:"test".into()}))
+                 ]
+                )
+            )
+            }
+        ).unwrap();
+        if let CompiledSpecStructure::Name(name) = cs.structure() {
+            if let CompiledSpecStructure::Tuple(compiled_specs) = cs.named_schema().get("test").unwrap().structure() {
+                dbg!(compiled_specs[1].named_schema().get("test"));
+            };
+        };
     }
 }

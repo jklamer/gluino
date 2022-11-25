@@ -11,4 +11,5 @@ description = "A library for working with/serializing data using the Gluino spec
 serde = {version = "1.0.143", features = ["derive"] }
 strum = {version = "0.24.1", features = ["derive"] }
 strum_macros = {version = "0.24.1"}
+base64 = "0.13.1"
 sha2="0.10.6"

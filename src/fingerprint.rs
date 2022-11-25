@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use sha2::Digest;
@@ -7,7 +8,7 @@ use sha2::Sha256;
 use crate::compiled_spec::CompiledSpec;
 use crate::compiled_spec::CompiledSpecStructure;
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub struct SpecFingerprint {
     bytes: [u8; 32],
 }
@@ -23,6 +24,17 @@ impl SpecFingerprint {
         SpecFingerprint {
             bytes: result.into(),
         }
+    }
+}
+
+impl Debug for SpecFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::with_capacity(32 + 32 / 4);
+        for chunk in self.bytes.chunks(6) {
+            s.push_str(&base64::encode(chunk));
+            s.push_str("-");
+        }
+        f.write_str(&s)
     }
 }
 
