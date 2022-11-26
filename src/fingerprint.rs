@@ -29,9 +29,10 @@ impl SpecFingerprint {
 impl Debug for SpecFingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = String::with_capacity(32 + 32 / 4);
-        for chunk in self.bytes.chunks(6) {
-            s.push_str(&base64::encode(chunk));
+        s.push_str(&hex::encode(&self.bytes[0..8]));
+        for chunk in self.bytes[8..].chunks(8) {
             s.push_str("-");
+            s.push_str(&hex::encode(chunk));
         }
         f.write_str(&s)
     }

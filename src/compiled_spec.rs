@@ -803,6 +803,7 @@ mod tests {
             ])),
         })
         .unwrap();
+        dbg!(&cs);
         if let CompiledSpecStructure::Name(name) = cs.structure() {
             cs.named_schema().get(name).unwrap().use_ref(|spec| {
                 if let CompiledSpecStructure::Tuple(compiled_specs) = spec.structure() {
