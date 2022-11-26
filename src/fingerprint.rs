@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::sync::Arc;
-
 use sha2::Digest;
 use sha2::Sha256;
+use std::collections::HashMap;
+use std::fmt::Debug;
 
 use crate::compiled_spec::CompiledSpec;
+use crate::compiled_spec::CompiledSpecRef;
 use crate::compiled_spec::CompiledSpecStructure;
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -15,7 +14,7 @@ pub struct SpecFingerprint {
 
 impl SpecFingerprint {
     pub fn new(
-        named_schema: &HashMap<String, Arc<CompiledSpec>>,
+        named_schema: &HashMap<String, CompiledSpecRef>,
         structure: &CompiledSpecStructure,
     ) -> SpecFingerprint {
         let mut hasher = Sha256::new();

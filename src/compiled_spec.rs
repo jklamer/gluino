@@ -5,18 +5,72 @@ use crate::{
         StringEncodingFmt,
     },
 };
+use core::fmt::Debug;
+use gc::{Finalize, Gc, GcCell, Trace};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
-    sync::Arc,
 };
 use strum::{EnumDiscriminants, EnumIter};
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Clone, Trace, Finalize)]
+pub enum CompiledSpecRef {
+    Compiled(Gc<CompiledSpec>),
+    Resolving(Gc<GcCell<CompiledSpec>>),
+}
+
+impl CompiledSpecRef {
+    pub fn of(spec: CompiledSpec) -> CompiledSpecRef {
+        CompiledSpecRef::Compiled(Gc::new(spec))
+    }
+
+    #[inline]
+    pub fn use_ref<T>(&self, f: impl FnOnce(&CompiledSpec) -> T) -> T {
+        match self {
+            CompiledSpecRef::Compiled(spec) => f(spec),
+            CompiledSpecRef::Resolving(spec_cell) => f(&spec_cell.borrow()),
+        }
+    }
+
+    pub(crate) fn replace_ref(&self, spec: CompiledSpec) {
+        if let Self::Resolving(cell) = self {
+            *cell.borrow_mut() = spec;
+        } else {
+            panic!("Tried to replace ref for non resolving schema")
+        }
+    }
+}
+
+impl PartialEq for CompiledSpecRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.use_ref(|spec| other.use_ref(|other_spec| spec == other_spec))
+    }
+}
+
+impl Eq for CompiledSpecRef {}
+
+impl Debug for CompiledSpecRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.use_ref(|spec| spec.to_spec().fmt(f))
+    }
+}
+
+#[derive(Eq, PartialEq, Clone, Trace, Finalize)]
 pub struct CompiledSpec {
+    #[unsafe_ignore_trace]
     fingerprint: SpecFingerprint,
-    named_schema: HashMap<String, Arc<CompiledSpec>>,
+    named_schema: HashMap<String, CompiledSpecRef>,
     structure: CompiledSpecStructure,
+}
+
+impl Debug for CompiledSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledSpec")
+            .field("fingerprint", &self.fingerprint)
+            .field("named_schema", &self.named_schema)
+            .field("structure", &self.to_spec())
+            .finish()
+    }
 }
 
 impl CompiledSpec {
@@ -28,7 +82,7 @@ impl CompiledSpec {
         &self.structure
     }
 
-    pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, Arc<CompiledSpec>> {
+    pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, CompiledSpecRef> {
         &self.named_schema
     }
 
@@ -38,7 +92,7 @@ impl CompiledSpec {
 
     pub fn compile_in_context(
         spec: Spec,
-        context: &mut HashMap<String, Arc<CompiledSpec>>,
+        context: &mut HashMap<String, CompiledSpecRef>,
     ) -> Result<CompiledSpec, SpecCompileError> {
         compile_spec_internal(spec, context, &mut HashSet::new(), &mut HashSet::new())
     }
@@ -58,14 +112,14 @@ impl CompiledSpec {
 
     //turn the structe of a compiled schema in the provided context into a context free spec
     pub(crate) fn make_spec(
-        context: &HashMap<String, Arc<CompiledSpec>>,
+        context: &HashMap<String, CompiledSpecRef>,
         structure: &CompiledSpecStructure,
     ) -> Spec {
         Self::make_spec_internal(context, &mut HashSet::new(), structure)
     }
 
     fn make_spec_internal(
-        context: &HashMap<String, Arc<CompiledSpec>>,
+        context: &HashMap<String, CompiledSpecRef>,
         names_converted: &mut HashSet<String>,
         structure: &CompiledSpecStructure,
     ) -> Spec {
@@ -119,14 +173,14 @@ impl CompiledSpec {
                     Spec::Ref { name: name.clone() }
                 } else {
                     names_converted.insert(name.clone());
-                    Spec::Name {
+                    context.get(name).unwrap().use_ref(|name_spec| Spec::Name {
                         name: name.clone(),
                         spec: Box::new(Self::make_spec_internal(
                             context,
                             names_converted,
-                            &context.get(name).unwrap().structure,
+                            &name_spec.structure,
                         )),
-                    }
+                    })
                 }
             }
             CompiledSpecStructure::Record {
@@ -181,59 +235,59 @@ impl CompiledSpec {
         }
     }
 
-    fn push_down_resolved(&mut self, name: &String, resolved_spec: &Arc<CompiledSpec>) {
-        if self.named_schema.contains_key(name) {
-            self.named_schema.insert(name.clone(), resolved_spec.clone());
-        }
+    // fn push_down_resolved(&mut self, name: &String, resolved_spec: &Arc<CompiledSpec>) {
+    //     if self.named_schema.contains_key(name) {
+    //         self.named_schema.insert(name.clone(), resolved_spec.clone());
+    //     }
 
-        match &mut self.structure {
-            CompiledSpecStructure::Map {ref mut key_spec, ref mut value_spec , ..} => {
-                key_spec.push_down_resolved(name, resolved_spec);
-                value_spec.push_down_resolved(name, resolved_spec);
-            },
-            CompiledSpecStructure::List {ref mut value_spec, ..} => {
-                value_spec.push_down_resolved(name, resolved_spec);
-            },
-            CompiledSpecStructure::Optional(ref mut spec) => {
-                spec.push_down_resolved(name, resolved_spec);
-            },
-            CompiledSpecStructure::Record { ref mut field_to_spec , ..} => {
-                for (_, spec) in field_to_spec.iter_mut() {
-                    spec.push_down_resolved(name, resolved_spec);
-                }
-            },
-            CompiledSpecStructure::Tuple(ref mut fields) => {
-                for field in fields.iter_mut() {
-                    field.push_down_resolved(name, resolved_spec);
-                }
-            },
-            CompiledSpecStructure::Enum { ref mut variant_to_spec, ..} => {
-                for (_, spec) in variant_to_spec.iter_mut() {
-                    spec.push_down_resolved(name, resolved_spec);
-                }
-            },
-            CompiledSpecStructure::Union(ref mut variants) => {
-                for variant in variants.iter_mut() {
-                    variant.push_down_resolved(name, resolved_spec);
-                }
-            },
-            CompiledSpecStructure::Name(_) => {
-                ()
-            }
-            CompiledSpecStructure::Void |
-            CompiledSpecStructure::Bool |
-            CompiledSpecStructure::Uint(_) |
-            CompiledSpecStructure::Int(_) |
-            CompiledSpecStructure::BinaryFloatingPoint(_) |
-            CompiledSpecStructure::DecimalFloatingPoint(_) |
-            CompiledSpecStructure::Decimal(_) |
-            CompiledSpecStructure::String(_, _) |
-            CompiledSpecStructure::Bytes(_) => {()}
-        }
-    }
+    //     match &mut self.structure {
+    //         CompiledSpecStructure::Map {ref mut key_spec, ref mut value_spec , ..} => {
+    //             key_spec.push_down_resolved(name, resolved_spec);
+    //             value_spec.push_down_resolved(name, resolved_spec);
+    //         },
+    //         CompiledSpecStructure::List {ref mut value_spec, ..} => {
+    //             value_spec.push_down_resolved(name, resolved_spec);
+    //         },
+    //         CompiledSpecStructure::Optional(ref mut spec) => {
+    //             spec.push_down_resolved(name, resolved_spec);
+    //         },
+    //         CompiledSpecStructure::Record { ref mut field_to_spec , ..} => {
+    //             for (_, spec) in field_to_spec.iter_mut() {
+    //                 spec.push_down_resolved(name, resolved_spec);
+    //             }
+    //         },
+    //         CompiledSpecStructure::Tuple(ref mut fields) => {
+    //             for field in fields.iter_mut() {
+    //                 field.push_down_resolved(name, resolved_spec);
+    //             }
+    //         },
+    //         CompiledSpecStructure::Enum { ref mut variant_to_spec, ..} => {
+    //             for (_, spec) in variant_to_spec.iter_mut() {
+    //                 spec.push_down_resolved(name, resolved_spec);
+    //             }
+    //         },
+    //         CompiledSpecStructure::Union(ref mut variants) => {
+    //             for variant in variants.iter_mut() {
+    //                 variant.push_down_resolved(name, resolved_spec);
+    //             }
+    //         },
+    //         CompiledSpecStructure::Name(_) => {
+    //             ()
+    //         }
+    //         CompiledSpecStructure::Void |
+    //         CompiledSpecStructure::Bool |
+    //         CompiledSpecStructure::Uint(_) |
+    //         CompiledSpecStructure::Int(_) |
+    //         CompiledSpecStructure::BinaryFloatingPoint(_) |
+    //         CompiledSpecStructure::DecimalFloatingPoint(_) |
+    //         CompiledSpecStructure::Decimal(_) |
+    //         CompiledSpecStructure::String(_, _) |
+    //         CompiledSpecStructure::Bytes(_) => {()}
+    //     }
+    // }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
+#[derive(Eq, PartialEq, Clone, EnumDiscriminants, Trace, Finalize)]
 #[strum_discriminants(derive(EnumIter))]
 pub enum CompiledSpecStructure {
     Void,
@@ -290,7 +344,7 @@ impl From<IllegalDecimalFmt> for SpecCompileError {
 
 pub(crate) fn compile_spec_internal(
     spec: Spec,
-    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    context: &mut HashMap<String, CompiledSpecRef>,
     non_optional_names: &mut HashSet<String>,
     names_used: &mut HashSet<String>,
 ) -> Result<CompiledSpec, SpecCompileError> {
@@ -311,7 +365,7 @@ pub(crate) fn compile_spec_internal(
 
 pub(crate) fn compile_structure_internal(
     spec: Spec,
-    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    context: &mut HashMap<String, CompiledSpecRef>,
     non_optional_names: &mut HashSet<String>,
     names_used: &mut HashSet<String>,
 ) -> Result<CompiledSpecStructure, SpecCompileError> {
@@ -346,15 +400,13 @@ pub(crate) fn compile_structure_internal(
             if context.contains_key(&name) {
                 Err(SpecCompileError::DuplicateName(name.clone()))
             } else {
-                context.insert(
-                    name.clone(),
-                    Arc::new(CompiledSpec::invalid_compiled_spec()),
-                );
+                let compiled_spec_ref = CompiledSpecRef::Resolving(Gc::new(GcCell::new(
+                    CompiledSpec::invalid_compiled_spec(),
+                )));
+                context.insert(name.clone(), compiled_spec_ref.clone());
                 non_optional_names.insert(name.clone());
                 let cs = compile_spec_internal(*spec, context, non_optional_names, names_used)?;
-                let mut cs = Arc::new(cs);
-                context.insert(name.clone(), cs.clone());
-                cs.push_down_resolved(&name, &cs);
+                compiled_spec_ref.replace_ref(cs);
                 non_optional_names.remove(&name);
                 names_used.insert(name.clone());
                 Ok(CompiledSpecStructure::Name(name))
@@ -487,7 +539,7 @@ impl TryFrom<Spec> for CompiledSpec {
 #[inline]
 fn box_compile(
     spec: Box<Spec>,
-    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    context: &mut HashMap<String, CompiledSpecRef>,
     names_used: &mut HashSet<String>,
 ) -> Result<Box<CompiledSpec>, SpecCompileError> {
     Ok(Box::new(compile_spec_internal(
@@ -503,7 +555,7 @@ fn compile_variants_with_loop_checking<T>(
     variants: Vec<(T, Spec)>,
     variant_to_spec: &mut HashMap<T, CompiledSpec>,
     non_optional_names: &mut HashSet<String>,
-    context: &mut HashMap<String, Arc<CompiledSpec>>,
+    context: &mut HashMap<String, CompiledSpecRef>,
     names_used: &mut HashSet<String>,
 ) -> Result<(), SpecCompileError>
 where
@@ -552,7 +604,7 @@ where
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Trace, Finalize)]
 pub struct DecimalFmt {
     pub precision: u64,
     pub scale: u64,
@@ -741,20 +793,25 @@ mod tests {
 
     #[test]
     fn test_recursion() {
-        let cs = CompiledSpec::compile(Spec::Name { 
-            name: "test".into(), 
-            spec: Box::new(Spec::Tuple(
-                vec![Spec::Int(3),
-                 Spec::Optional(Box::new(Spec::Ref{name:"test".into()}))
-                 ]
-                )
-            )
-            }
-        ).unwrap();
+        let cs = CompiledSpec::compile(Spec::Name {
+            name: "test".into(),
+            spec: Box::new(Spec::Tuple(vec![
+                Spec::Int(3),
+                Spec::Optional(Box::new(Spec::Ref {
+                    name: "test".into(),
+                })),
+            ])),
+        })
+        .unwrap();
         if let CompiledSpecStructure::Name(name) = cs.structure() {
-            if let CompiledSpecStructure::Tuple(compiled_specs) = cs.named_schema().get("test").unwrap().structure() {
-                dbg!(compiled_specs[1].named_schema().get("test"));
-            };
+            cs.named_schema().get(name).unwrap().use_ref(|spec| {
+                if let CompiledSpecStructure::Tuple(compiled_specs) = spec.structure() {
+                    assert_ne!(
+                        compiled_specs[1].named_schema().get("test").unwrap(),
+                        &CompiledSpecRef::of(CompiledSpec::invalid_compiled_spec())
+                    );
+                };
+            })
         };
     }
 }

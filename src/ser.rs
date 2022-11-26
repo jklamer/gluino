@@ -1,13 +1,12 @@
-use std::{
-    io::{self, Write}
-};
+use std::{io::{self, Write}, collections::HashMap};
 
 use strum::EnumDiscriminants;
 use strum_macros::EnumIter;
 
 use crate::{
     compiled_spec::{CompiledSpec, CompiledSpecStructure},
-    spec::{InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat},
+    spec::{Size, combine, InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat},
+    util::variable_length_encode_u64,
 };
 pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
@@ -68,11 +67,8 @@ impl<W> GluinoValueSer<W> for VoidGluinoValueSer
 where
     W: Write,
 {
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        _: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
+    #[inline]
+    fn serialize(&self, value: GluinoValue, _: &mut W) -> Result<usize, GluinoSerializationError> {
         if matches!(value, GluinoValue::Void) {
             Ok(0)
         } else {
@@ -90,6 +86,7 @@ impl<W> GluinoValueSer<W> for BoolGluinoValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -116,6 +113,7 @@ impl<W> GluinoValueSer<W> for I8ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -136,6 +134,7 @@ impl<W> GluinoValueSer<W> for I16ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -156,6 +155,7 @@ impl<W> GluinoValueSer<W> for I32ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -176,6 +176,7 @@ impl<W> GluinoValueSer<W> for I64ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -196,6 +197,7 @@ impl<W> GluinoValueSer<W> for I128ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -218,6 +220,7 @@ impl<W> GluinoValueSer<W> for BigIntValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -243,6 +246,7 @@ impl<W> GluinoValueSer<W> for U8ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -263,6 +267,7 @@ impl<W> GluinoValueSer<W> for U16ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -283,6 +288,7 @@ impl<W> GluinoValueSer<W> for U32ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -303,6 +309,7 @@ impl<W> GluinoValueSer<W> for U64ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -323,6 +330,7 @@ impl<W> GluinoValueSer<W> for U128ValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -345,6 +353,7 @@ impl<W> GluinoValueSer<W> for BigUintValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -370,6 +379,7 @@ impl<W> GluinoValueSer<W> for FloatValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -390,6 +400,7 @@ impl<W> GluinoValueSer<W> for DoubleValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -412,6 +423,7 @@ impl<W> GluinoValueSer<W> for BinaryFloatingPointValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -442,6 +454,7 @@ impl<W> GluinoValueSer<W> for DecimalFloatingPointValueSer
 where
     W: Write,
 {
+    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
@@ -461,9 +474,272 @@ where
     }
 }
 
-pub fn get_unit_serialization_function<W>(spec: &CompiledSpec) -> Box<dyn GluinoValueSer<W>>
+struct FixedByteValueSer {
+    n: u64
+}
+
+impl <W> GluinoValueSer<W> for FixedByteValueSer 
+where for<'a> W: Write + 'a{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Bytes(bytes) = value {
+            if bytes.len() as u64 == self.n {
+                writer.write_all(&bytes[0..bytes.len()])?;
+                Ok(bytes.len())
+            } else {
+                // wrong size
+                todo!()
+            }
+        } else {
+            //mismatched type
+            todo!()
+        }
+    }
+}
+
+struct VariableByteValueSer;
+
+impl <W> GluinoValueSer<W> for VariableByteValueSer 
+where for<'a> W: Write + 'a{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Bytes(bytes) = value {
+            let v_size = variable_length_encode_u64(bytes.len() as u64, writer)?;
+            writer.write_all(&bytes)?;
+            Ok(v_size + bytes.len())
+        } else {
+            //mismatched type
+            todo!()
+        }
+    }
+}
+
+struct FixedSizeMapSer<W> {
+    n: u64,
+    key_ser: Box<dyn GluinoValueSer<W>>,
+    value_ser: Box<dyn GluinoValueSer<W>>,
+}
+
+impl<W> GluinoValueSer<W> for FixedSizeMapSer<W>
 where
     W: Write,
+{
+    #[inline]
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Map(values) = value {
+            if values.len() as u64 == self.n {
+                values
+                    .into_iter()
+                    .map(|(key, value)| {
+                        combine(
+                            self.key_ser.serialize(key, writer),
+                            self.value_ser.serialize(value, writer),
+                        )
+                    })
+                    .fold(Ok(0), combine)
+            } else {
+                //wrong size!
+                todo!()
+            }
+        } else {
+            //mismatch error
+            todo!()
+        }
+    }
+}
+
+struct VariableSizeMapSer<W> {
+    key_ser: Box<dyn GluinoValueSer<W>>,
+    value_ser: Box<dyn GluinoValueSer<W>>,
+}
+
+impl<W> GluinoValueSer<W> for VariableSizeMapSer<W>
+where
+    W: Write,
+{
+    #[inline]
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Map(values) = value {
+            Ok(variable_length_encode_u64(values.len() as u64, writer)?
+                + values
+                    .into_iter()
+                    .map(|(key, value)| {
+                        combine(
+                            self.key_ser.serialize(key, writer),
+                            self.value_ser.serialize(value, writer),
+                        )
+                    })
+                    .fold(Ok(0), combine)?)
+        } else {
+            //mismatch error
+            todo!()
+        }
+    }
+}
+
+struct FixedSizeListSer<W> {
+    n: u64,
+    value_ser: Box<dyn GluinoValueSer<W>>
+}
+
+impl <W> GluinoValueSer<W> for FixedSizeListSer<W> 
+where
+for<'a> W: Write + 'a
+{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::List(values) = value {
+            if values.len() as u64 == self.n {
+                values
+                    .into_iter()
+                    .map(|value: GluinoValue| {
+                        self.value_ser.serialize(value, writer)
+                    })
+                    .fold(Ok(0), combine)
+            } else {
+                //wrong size!
+                todo!()
+            }
+        } else {
+            //mismatch error
+            todo!()
+        }
+    }
+}
+
+struct VariableSizeListSer<W> {
+    value_ser: Box<dyn GluinoValueSer<W>>
+}
+
+impl <W> GluinoValueSer<W> for VariableSizeListSer<W> 
+where
+for<'a> W: Write + 'a
+{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::List(values) = value {
+            Ok(variable_length_encode_u64(values.len() as u64, writer)? +
+                values
+                    .into_iter()
+                    .map(|value: GluinoValue| {
+                        self.value_ser.serialize(value, writer)
+                    })
+                    .fold(Ok(0), combine)?)
+        } else {
+            //mismatch error
+            todo!()
+        }
+    }
+}
+
+struct OptionalValueSer<W> {
+    inner_ser: Box<dyn GluinoValueSer<W>>
+}
+
+impl <W> GluinoValueSer<W> for OptionalValueSer<W> 
+where 
+for<'a> W: Write + 'a{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Optional(optional_value) = value {
+            match optional_value {
+                Some(value) => {
+                    writer.write_all(&[1])?;
+                    Ok(1 + self.inner_ser.serialize(*value, writer)?)
+                },
+                None => {writer.write_all(&[0])?; Ok(1)}
+            }
+        } else {
+            //TODO mismatch error
+            todo!()
+        }
+    }
+}
+
+struct ProductValueSer<W> {
+    field_sers: Vec<Box<dyn GluinoValueSer<W>>>
+}
+
+impl <W> GluinoValueSer<W> for ProductValueSer<W> 
+where for<'a> W: Write + 'a {
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Record(fields) | GluinoValue::Tuple(fields) = value {
+            if fields.len() == self.field_sers.len() {
+                fields.into_iter().zip(self.field_sers.iter())
+                .map(|(field, ser)| {
+                    ser.serialize(field, writer)
+                })
+                .fold(Ok(0), combine)
+            } else {
+                //wrong size
+                todo!()
+            }
+        }else {
+            //mismatched
+            todo!()
+        }
+    }
+}
+
+struct SumValueSer<W> {
+    varient_sers: HashMap<u64, Box<dyn GluinoValueSer<W>>>
+}
+
+impl <W> GluinoValueSer<W> for SumValueSer<W> 
+where for<'a> W: Write + 'a
+{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::Enum(variant_id, value) | GluinoValue::Union(variant_id, value) = value {
+            if let Some(variant_ser) = self.varient_sers.get(&variant_id) {
+                Ok(
+                    variable_length_encode_u64(variant_id, writer)? +
+                    variant_ser.serialize(*value, writer)?
+                )
+            } else {
+                //invalid variant id
+                todo!()
+            }
+        } else {
+            //mismatch
+            todo!()
+        }
+    }
+}
+
+pub fn get_unit_serialization_function<W>(spec: &CompiledSpec) -> Box<dyn GluinoValueSer<W>>
+where
+    for <'a> W: Write + 'a,
 {
     match spec.structure() {
         CompiledSpecStructure::Void => Box::new(VoidGluinoValueSer),
@@ -505,30 +781,74 @@ where
         CompiledSpecStructure::Decimal(fmt) => {
             //standardize on serialization of decimal type
             todo!();
-        }
+        },
+        CompiledSpecStructure::Bytes(size) => {
+            match size {
+                Size::Fixed(n) => Box::new(FixedByteValueSer{n:n.clone()}),
+                Size::Variable => Box::new(VariableByteValueSer)
+            }
+        },
+        CompiledSpecStructure::String(size, fmt) => todo!(), 
         CompiledSpecStructure::Map {
             size,
             key_spec,
             value_spec,
         } => {
-            todo!()
-        }
-        CompiledSpecStructure::List { size, value_spec } => todo!(),
-        CompiledSpecStructure::String(size, fmt) => todo!(),
-        CompiledSpecStructure::Bytes(size) => todo!(),
-        CompiledSpecStructure::Optional(inner) => todo!(),
-        CompiledSpecStructure::Name(name) => todo!(),
+            let key_ser = get_unit_serialization_function::<W>(key_spec);
+            let value_ser = get_unit_serialization_function::<W>(value_spec);
+            match size {
+                Size::Fixed(n) => Box::new(FixedSizeMapSer{ n:n.clone(), key_ser, value_ser}),
+                Size::Variable => Box::new(VariableSizeMapSer{key_ser, value_ser})
+            }
+        },
+        CompiledSpecStructure::List { size, value_spec } => {
+            let value_ser = get_unit_serialization_function::<W>(value_spec);
+            match size {
+                Size::Fixed(n) => Box::new(FixedSizeListSer{n: n.clone(), value_ser}),
+                Size::Variable => Box::new(VariableSizeListSer{value_ser}),
+            }
+        },
+        CompiledSpecStructure::Optional(inner) => {
+            let inner_ser = get_unit_serialization_function::<W>(inner);
+            Box::new(OptionalValueSer{inner_ser})
+        },
         CompiledSpecStructure::Record {
             fields,
             field_to_spec,
-            field_to_index,
-        } => todo!(),
-        CompiledSpecStructure::Tuple(fields) => todo!(),
+            ..
+        } => {
+            Box::new(ProductValueSer {
+                field_sers: fields.iter().map(|field| field_to_spec.get(field).unwrap())
+                .map(|spec| get_unit_serialization_function::<W>(spec))
+                .collect()
+            })
+        },
+        CompiledSpecStructure::Tuple(fields) => Box::new(ProductValueSer {
+            field_sers: fields.iter().map(|spec| get_unit_serialization_function::<W>(spec)).collect()
+        }),
         CompiledSpecStructure::Enum {
             variants,
             variant_to_spec,
-        } => todo!(),
-        CompiledSpecStructure::Union(variants) => todo!(),
+        } => {
+            Box::new(SumValueSer{
+                varient_sers: variants.iter()
+                .map(|variant| variant_to_spec.get(variant).unwrap())
+                .map(|spec| get_unit_serialization_function::<W>(spec))
+                .enumerate()
+                .map(|(a,b)|(a as u64, b))
+                .collect()
+            })  
+        },
+        CompiledSpecStructure::Union(variants) => {
+            Box::new(SumValueSer{
+                varient_sers: variants.iter()
+                .map(|spec| get_unit_serialization_function::<W>(spec))
+                .enumerate()
+                .map(|(a,b)|(a as u64, b))
+                .collect()
+            })
+        },
+        CompiledSpecStructure::Name(name) => todo!(),
     }
 }
 
@@ -545,179 +865,3 @@ impl From<io::Error> for GluinoSerializationError {
         GluinoSerializationError::WriteError(e)
     }
 }
-
-// impl<T: GluinoSpecType> serde::Serializer for GluinoSerializer<T> {
-//     type Ok = GluinoValue;
-
-//     type Error = SerializationError;
-
-//     type SerializeSeq;
-
-//     type SerializeTuple;
-
-//     type SerializeTupleStruct;
-
-//     type SerializeTupleVariant;
-
-//     type SerializeMap;
-
-//     type SerializeStruct;
-
-//     type SerializeStructVariant;
-
-//     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_i8(self, v: i8) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_i16(self, v: i16) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_i32(self, v: i32) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_i64(self, v: i64) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_u16(self, v: u16) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_u32(self, v: u32) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_f64(self, v: f64) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_char(self, v: char) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_some<S: ?Sized>(self, value: &S) -> Result<Self::Ok, Self::Error>
-//     where
-//         S: serde::Serialize,
-//     {
-//         todo!()
-//     }
-
-//     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_unit_variant(
-//         self,
-//         name: &'static str,
-//         variant_index: u32,
-//         variant: &'static str,
-//     ) -> Result<Self::Ok, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_newtype_struct<S: ?Sized>(
-//         self,
-//         name: &'static str,
-//         value: &S,
-//     ) -> Result<Self::Ok, Self::Error>
-//     where
-//         S: serde::Serialize,
-//     {
-//         todo!()
-//     }
-
-//     fn serialize_newtype_variant<S: ?Sized>(
-//         self,
-//         name: &'static str,
-//         variant_index: u32,
-//         variant: &'static str,
-//         value: &S,
-//     ) -> Result<Self::Ok, Self::Error>
-//     where
-//         S: serde::Serialize,
-//     {
-//         todo!()
-//     }
-
-//     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_tuple_struct(
-//         self,
-//         name: &'static str,
-//         len: usize,
-//     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_tuple_variant(
-//         self,
-//         name: &'static str,
-//         variant_index: u32,
-//         variant: &'static str,
-//         len: usize,
-//     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_struct(
-//         self,
-//         name: &'static str,
-//         len: usize,
-//     ) -> Result<Self::SerializeStruct, Self::Error> {
-//         todo!()
-//     }
-
-//     fn serialize_struct_variant(
-//         self,
-//         name: &'static str,
-//         variant_index: u32,
-//         variant: &'static str,
-//         len: usize,
-//     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-//         todo!()
-//     }
-// }

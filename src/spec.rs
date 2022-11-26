@@ -1,4 +1,5 @@
 use core::slice;
+use gc::{Finalize, Trace};
 use std::{
     io::Read,
     io::{self, Write},
@@ -482,7 +483,7 @@ impl From<util::VariableLengthDecodingError> for SpecParsingError {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Trace, Finalize)]
 pub enum Size {
     Fixed(u64),
     Variable,
@@ -507,7 +508,7 @@ impl Size {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter, Trace, Finalize)]
 pub enum InterchangeBinaryFloatingPointFormat {
     Half,
     Single,
@@ -563,7 +564,7 @@ impl InterchangeBinaryFloatingPointFormat {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter, Trace, Finalize)]
 pub enum InterchangeDecimalFloatingPointFormat {
     Dec32,
     Dec64,
@@ -617,7 +618,7 @@ impl InterchangeDecimalFloatingPointFormat {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter, Trace, Finalize)]
 pub enum StringEncodingFmt {
     #[default]
     Utf8, //use this one, please
@@ -646,7 +647,7 @@ impl StringEncodingFmt {
     }
 }
 
-fn combine(a: Result<usize, io::Error>, b: Result<usize, io::Error>) -> Result<usize, io::Error> {
+pub(crate) fn combine<E>(a: Result<usize, E>, b: Result<usize, E>) -> Result<usize, E> {
     match (a.as_ref(), b.as_ref()) {
         (Ok(i), Ok(j)) => Ok(i + j),
         (Err(_), _) => a,
