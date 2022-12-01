@@ -1,11 +1,17 @@
-use std::{io::{self, Write}, collections::HashMap};
+use std::{
+    collections::HashMap,
+    io::{self, Write},
+};
 
+use gc::{Finalize, Gc, GcCell, Trace};
 use strum::EnumDiscriminants;
 use strum_macros::EnumIter;
 
 use crate::{
     compiled_spec::{CompiledSpec, CompiledSpecStructure},
-    spec::{Size, combine, InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat},
+    spec::{
+        combine, InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size,
+    },
     util::variable_length_encode_u64,
 };
 pub trait GluinoSpecType {
@@ -61,6 +67,7 @@ where
     ) -> Result<usize, GluinoSerializationError>;
 }
 
+#[derive(Trace, Finalize)]
 struct VoidGluinoValueSer;
 
 impl<W> GluinoValueSer<W> for VoidGluinoValueSer
@@ -80,6 +87,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct BoolGluinoValueSer;
 
 impl<W> GluinoValueSer<W> for BoolGluinoValueSer
@@ -107,6 +115,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct I8ValueSer;
 
 impl<W> GluinoValueSer<W> for I8ValueSer
@@ -128,6 +137,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct I16ValueSer;
 
 impl<W> GluinoValueSer<W> for I16ValueSer
@@ -149,6 +159,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct I32ValueSer;
 
 impl<W> GluinoValueSer<W> for I32ValueSer
@@ -170,6 +181,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct I64ValueSer;
 
 impl<W> GluinoValueSer<W> for I64ValueSer
@@ -191,6 +203,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct I128ValueSer;
 
 impl<W> GluinoValueSer<W> for I128ValueSer
@@ -212,6 +225,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct BigIntValueSer {
     n: u8,
 }
@@ -240,6 +254,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct U8ValueSer;
 
 impl<W> GluinoValueSer<W> for U8ValueSer
@@ -261,6 +276,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct U16ValueSer;
 
 impl<W> GluinoValueSer<W> for U16ValueSer
@@ -282,6 +298,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct U32ValueSer;
 
 impl<W> GluinoValueSer<W> for U32ValueSer
@@ -303,6 +320,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct U64ValueSer;
 
 impl<W> GluinoValueSer<W> for U64ValueSer
@@ -324,6 +342,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct U128ValueSer;
 
 impl<W> GluinoValueSer<W> for U128ValueSer
@@ -345,6 +364,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct BigUintValueSer {
     n: u8,
 }
@@ -373,6 +393,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct FloatValueSer;
 
 impl<W> GluinoValueSer<W> for FloatValueSer
@@ -394,6 +415,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct DoubleValueSer;
 
 impl<W> GluinoValueSer<W> for DoubleValueSer
@@ -415,6 +437,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct BinaryFloatingPointValueSer {
     fmt: InterchangeBinaryFloatingPointFormat,
 }
@@ -446,6 +469,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct DecimalFloatingPointValueSer {
     fmt: InterchangeDecimalFloatingPointFormat,
 }
@@ -474,12 +498,15 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct FixedByteValueSer {
-    n: u64
+    n: u64,
 }
 
-impl <W> GluinoValueSer<W> for FixedByteValueSer 
-where for<'a> W: Write + 'a{
+impl<W> GluinoValueSer<W> for FixedByteValueSer
+where
+    for<'a> W: Write + 'a,
+{
     fn serialize(
         &self,
         value: GluinoValue,
@@ -500,10 +527,13 @@ where for<'a> W: Write + 'a{
     }
 }
 
+#[derive(Trace, Finalize)]
 struct VariableByteValueSer;
 
-impl <W> GluinoValueSer<W> for VariableByteValueSer 
-where for<'a> W: Write + 'a{
+impl<W> GluinoValueSer<W> for VariableByteValueSer
+where
+    for<'a> W: Write + 'a,
+{
     fn serialize(
         &self,
         value: GluinoValue,
@@ -520,6 +550,7 @@ where for<'a> W: Write + 'a{
     }
 }
 
+#[derive(Trace, Finalize)]
 struct FixedSizeMapSer<W> {
     n: u64,
     key_ser: Box<dyn GluinoValueSer<W>>,
@@ -558,6 +589,7 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct VariableSizeMapSer<W> {
     key_ser: Box<dyn GluinoValueSer<W>>,
     value_ser: Box<dyn GluinoValueSer<W>>,
@@ -591,14 +623,15 @@ where
     }
 }
 
+#[derive(Trace, Finalize)]
 struct FixedSizeListSer<W> {
     n: u64,
-    value_ser: Box<dyn GluinoValueSer<W>>
+    value_ser: Box<dyn GluinoValueSer<W>>,
 }
 
-impl <W> GluinoValueSer<W> for FixedSizeListSer<W> 
+impl<W> GluinoValueSer<W> for FixedSizeListSer<W>
 where
-for<'a> W: Write + 'a
+    for<'a> W: Write + 'a,
 {
     fn serialize(
         &self,
@@ -609,9 +642,7 @@ for<'a> W: Write + 'a
             if values.len() as u64 == self.n {
                 values
                     .into_iter()
-                    .map(|value: GluinoValue| {
-                        self.value_ser.serialize(value, writer)
-                    })
+                    .map(|value: GluinoValue| self.value_ser.serialize(value, writer))
                     .fold(Ok(0), combine)
             } else {
                 //wrong size!
@@ -624,13 +655,14 @@ for<'a> W: Write + 'a
     }
 }
 
+#[derive(Trace, Finalize)]
 struct VariableSizeListSer<W> {
-    value_ser: Box<dyn GluinoValueSer<W>>
+    value_ser: Box<dyn GluinoValueSer<W>>,
 }
 
-impl <W> GluinoValueSer<W> for VariableSizeListSer<W> 
+impl<W> GluinoValueSer<W> for VariableSizeListSer<W>
 where
-for<'a> W: Write + 'a
+    for<'a> W: Write + 'a,
 {
     fn serialize(
         &self,
@@ -638,12 +670,10 @@ for<'a> W: Write + 'a
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::List(values) = value {
-            Ok(variable_length_encode_u64(values.len() as u64, writer)? +
-                values
+            Ok(variable_length_encode_u64(values.len() as u64, writer)?
+                + values
                     .into_iter()
-                    .map(|value: GluinoValue| {
-                        self.value_ser.serialize(value, writer)
-                    })
+                    .map(|value: GluinoValue| self.value_ser.serialize(value, writer))
                     .fold(Ok(0), combine)?)
         } else {
             //mismatch error
@@ -652,13 +682,15 @@ for<'a> W: Write + 'a
     }
 }
 
+#[derive(Trace, Finalize)]
 struct OptionalValueSer<W> {
-    inner_ser: Box<dyn GluinoValueSer<W>>
+    inner_ser: Box<dyn GluinoValueSer<W>>,
 }
 
-impl <W> GluinoValueSer<W> for OptionalValueSer<W> 
-where 
-for<'a> W: Write + 'a{
+impl<W> GluinoValueSer<W> for OptionalValueSer<W>
+where
+    for<'a> W: Write + 'a,
+{
     fn serialize(
         &self,
         value: GluinoValue,
@@ -669,8 +701,11 @@ for<'a> W: Write + 'a{
                 Some(value) => {
                     writer.write_all(&[1])?;
                     Ok(1 + self.inner_ser.serialize(*value, writer)?)
-                },
-                None => {writer.write_all(&[0])?; Ok(1)}
+                }
+                None => {
+                    writer.write_all(&[0])?;
+                    Ok(1)
+                }
             }
         } else {
             //TODO mismatch error
@@ -679,12 +714,15 @@ for<'a> W: Write + 'a{
     }
 }
 
+#[derive(Trace, Finalize)]
 struct ProductValueSer<W> {
-    field_sers: Vec<Box<dyn GluinoValueSer<W>>>
+    field_sers: Vec<Box<dyn GluinoValueSer<W>>>,
 }
 
-impl <W> GluinoValueSer<W> for ProductValueSer<W> 
-where for<'a> W: Write + 'a {
+impl<W> GluinoValueSer<W> for ProductValueSer<W>
+where
+    for<'a> W: Write + 'a,
+{
     fn serialize(
         &self,
         value: GluinoValue,
@@ -692,16 +730,16 @@ where for<'a> W: Write + 'a {
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::Record(fields) | GluinoValue::Tuple(fields) = value {
             if fields.len() == self.field_sers.len() {
-                fields.into_iter().zip(self.field_sers.iter())
-                .map(|(field, ser)| {
-                    ser.serialize(field, writer)
-                })
-                .fold(Ok(0), combine)
+                fields
+                    .into_iter()
+                    .zip(self.field_sers.iter())
+                    .map(|(field, ser)| ser.serialize(field, writer))
+                    .fold(Ok(0), combine)
             } else {
                 //wrong size
                 todo!()
             }
-        }else {
+        } else {
             //mismatched
             todo!()
         }
@@ -709,23 +747,23 @@ where for<'a> W: Write + 'a {
 }
 
 struct SumValueSer<W> {
-    varient_sers: HashMap<u64, Box<dyn GluinoValueSer<W>>>
+    varient_sers: HashMap<u64, Box<dyn GluinoValueSer<W>>>,
 }
 
-impl <W> GluinoValueSer<W> for SumValueSer<W> 
-where for<'a> W: Write + 'a
+impl<W> GluinoValueSer<W> for SumValueSer<W>
+where
+    for<'a> W: Write + 'a,
 {
     fn serialize(
         &self,
         value: GluinoValue,
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Enum(variant_id, value) | GluinoValue::Union(variant_id, value) = value {
+        if let GluinoValue::Enum(variant_id, value) | GluinoValue::Union(variant_id, value) = value
+        {
             if let Some(variant_ser) = self.varient_sers.get(&variant_id) {
-                Ok(
-                    variable_length_encode_u64(variant_id, writer)? +
-                    variant_ser.serialize(*value, writer)?
-                )
+                Ok(variable_length_encode_u64(variant_id, writer)?
+                    + variant_ser.serialize(*value, writer)?)
             } else {
                 //invalid variant id
                 todo!()
@@ -737,9 +775,36 @@ where for<'a> W: Write + 'a
     }
 }
 
+impl<W> GluinoValueSer<W> for Gc<GcCell<Box<dyn GluinoValueSer<W>>>>
+where
+    for<'a> W: Write + 'a,
+    for<'x> (dyn GluinoValueSer<W>): Trace + Finalize + 'x,
+{
+    #[inline]
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        self.borrow().serialize(value, writer)
+    }
+}
+
 pub fn get_unit_serialization_function<W>(spec: &CompiledSpec) -> Box<dyn GluinoValueSer<W>>
 where
-    for <'a> W: Write + 'a,
+    for<'x> (dyn GluinoValueSer<W>): Trace + Finalize + 'x,
+    for<'a> W: Write + 'a,
+{
+    get_unit_serialization_function_internal::<W>(spec, &mut HashMap::new())
+}
+
+fn get_unit_serialization_function_internal<W>(
+    spec: &CompiledSpec,
+    named_unit_sers: &mut HashMap<String, Gc<GcCell<Box<dyn GluinoValueSer<W>>>>>,
+) -> Box<dyn GluinoValueSer<W>>
+where
+    for<'x> (dyn GluinoValueSer<W>): Trace + Finalize + 'x,
+    for<'a> W: Write + 'a,
 {
     match spec.structure() {
         CompiledSpecStructure::Void => Box::new(VoidGluinoValueSer),
@@ -781,74 +846,98 @@ where
         CompiledSpecStructure::Decimal(fmt) => {
             //standardize on serialization of decimal type
             todo!();
+        }
+        CompiledSpecStructure::Bytes(size) => match size {
+            Size::Fixed(n) => Box::new(FixedByteValueSer { n: n.clone() }),
+            Size::Variable => Box::new(VariableByteValueSer),
         },
-        CompiledSpecStructure::Bytes(size) => {
-            match size {
-                Size::Fixed(n) => Box::new(FixedByteValueSer{n:n.clone()}),
-                Size::Variable => Box::new(VariableByteValueSer)
-            }
-        },
-        CompiledSpecStructure::String(size, fmt) => todo!(), 
+        CompiledSpecStructure::String(size, fmt) => todo!(),
         CompiledSpecStructure::Map {
             size,
             key_spec,
             value_spec,
         } => {
-            let key_ser = get_unit_serialization_function::<W>(key_spec);
-            let value_ser = get_unit_serialization_function::<W>(value_spec);
+            let key_ser = get_unit_serialization_function_internal::<W>(key_spec, named_unit_sers);
+            let value_ser =
+                get_unit_serialization_function_internal::<W>(value_spec, named_unit_sers);
             match size {
-                Size::Fixed(n) => Box::new(FixedSizeMapSer{ n:n.clone(), key_ser, value_ser}),
-                Size::Variable => Box::new(VariableSizeMapSer{key_ser, value_ser})
+                Size::Fixed(n) => Box::new(FixedSizeMapSer {
+                    n: n.clone(),
+                    key_ser,
+                    value_ser,
+                }),
+                Size::Variable => Box::new(VariableSizeMapSer { key_ser, value_ser }),
             }
-        },
+        }
         CompiledSpecStructure::List { size, value_spec } => {
-            let value_ser = get_unit_serialization_function::<W>(value_spec);
+            let value_ser =
+                get_unit_serialization_function_internal::<W>(value_spec, named_unit_sers);
             match size {
-                Size::Fixed(n) => Box::new(FixedSizeListSer{n: n.clone(), value_ser}),
-                Size::Variable => Box::new(VariableSizeListSer{value_ser}),
+                Size::Fixed(n) => Box::new(FixedSizeListSer {
+                    n: n.clone(),
+                    value_ser,
+                }),
+                Size::Variable => Box::new(VariableSizeListSer { value_ser }),
             }
-        },
+        }
         CompiledSpecStructure::Optional(inner) => {
-            let inner_ser = get_unit_serialization_function::<W>(inner);
-            Box::new(OptionalValueSer{inner_ser})
-        },
+            let inner_ser = get_unit_serialization_function_internal::<W>(inner, named_unit_sers);
+            Box::new(OptionalValueSer { inner_ser })
+        }
         CompiledSpecStructure::Record {
             fields,
             field_to_spec,
             ..
-        } => {
-            Box::new(ProductValueSer {
-                field_sers: fields.iter().map(|field| field_to_spec.get(field).unwrap())
-                .map(|spec| get_unit_serialization_function::<W>(spec))
-                .collect()
-            })
-        },
+        } => Box::new(ProductValueSer {
+            field_sers: fields
+                .iter()
+                .map(|field| field_to_spec.get(field).unwrap())
+                .map(|spec| get_unit_serialization_function_internal::<W>(spec, named_unit_sers))
+                .collect(),
+        }),
         CompiledSpecStructure::Tuple(fields) => Box::new(ProductValueSer {
-            field_sers: fields.iter().map(|spec| get_unit_serialization_function::<W>(spec)).collect()
+            field_sers: fields
+                .iter()
+                .map(|spec| get_unit_serialization_function_internal::<W>(spec, named_unit_sers))
+                .collect(),
         }),
         CompiledSpecStructure::Enum {
             variants,
             variant_to_spec,
-        } => {
-            Box::new(SumValueSer{
-                varient_sers: variants.iter()
+        } => Box::new(SumValueSer {
+            varient_sers: variants
+                .iter()
                 .map(|variant| variant_to_spec.get(variant).unwrap())
-                .map(|spec| get_unit_serialization_function::<W>(spec))
+                .map(|spec| get_unit_serialization_function_internal::<W>(spec, named_unit_sers))
                 .enumerate()
-                .map(|(a,b)|(a as u64, b))
-                .collect()
-            })  
-        },
-        CompiledSpecStructure::Union(variants) => {
-            Box::new(SumValueSer{
-                varient_sers: variants.iter()
-                .map(|spec| get_unit_serialization_function::<W>(spec))
+                .map(|(a, b)| (a as u64, b))
+                .collect(),
+        }),
+        CompiledSpecStructure::Union(variants) => Box::new(SumValueSer {
+            varient_sers: variants
+                .iter()
+                .map(|spec| get_unit_serialization_function_internal::<W>(spec, named_unit_sers))
                 .enumerate()
-                .map(|(a,b)|(a as u64, b))
-                .collect()
-            })
+                .map(|(a, b)| (a as u64, b))
+                .collect(),
+        }),
+        CompiledSpecStructure::Name(name) => match named_unit_sers.get(name) {
+            Some(ser) => Box::new(ser.clone()),
+            None => {
+                let named_ser: Gc<GcCell<Box<dyn GluinoValueSer<W>>>> =
+                    Gc::new(GcCell::new(Box::new(VoidGluinoValueSer)));
+                named_unit_sers.insert(name.clone(), named_ser.clone());
+                let inner_ser = spec
+                    .named_schema()
+                    .get(name)
+                    .expect("Compiled spec should have named spec")
+                    .use_ref(|spec| {
+                        get_unit_serialization_function_internal::<W>(spec, named_unit_sers)
+                    });
+                *named_ser.borrow_mut() = inner_ser;
+                Box::new(named_ser)
+            }
         },
-        CompiledSpecStructure::Name(name) => todo!(),
     }
 }
 
