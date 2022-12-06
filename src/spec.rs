@@ -3,6 +3,7 @@ use gc::{Finalize, Trace};
 use std::{
     io::Read,
     io::{self, Write},
+    ops::{Range, RangeInclusive},
 };
 use strum_macros::{EnumDiscriminants, EnumIter};
 
@@ -10,6 +11,7 @@ use crate::{
     compiled_spec::{CompiledSpec, SpecCompileError},
     util::{
         self, variable_length_decode_u64, variable_length_encode_u64, VariableLengthDecodingError,
+        WriteAllReturnSize,
     },
 };
 
@@ -115,29 +117,31 @@ impl Spec {
 
     fn to_bytes_internal<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
         Ok(match self {
-            Spec::Bool => out.write(&[BOOL])?,
+            Spec::Bool => out.write_all_size(&[BOOL])?,
             Spec::Uint(scale) => match scale {
-                0 => out.write(&[UINT_0])?,
-                1 => out.write(&[UINT_1])?,
-                2 => out.write(&[UINT_2])?,
-                3 => out.write(&[UINT_3])?,
-                s => out.write(&[UINT, *s])?,
+                0 => out.write_all_size(&[UINT_0])?,
+                1 => out.write_all_size(&[UINT_1])?,
+                2 => out.write_all_size(&[UINT_2])?,
+                3 => out.write_all_size(&[UINT_3])?,
+                s => out.write_all_size(&[UINT, *s])?,
             },
             Spec::Int(scale) => match scale {
-                0 => out.write(&[INT_0])?,
-                1 => out.write(&[INT_1])?,
-                2 => out.write(&[INT_2])?,
-                3 => out.write(&[INT_3])?,
-                s => out.write(&[INT, *s])?,
+                0 => out.write_all_size(&[INT_0])?,
+                1 => out.write_all_size(&[INT_1])?,
+                2 => out.write_all_size(&[INT_2])?,
+                3 => out.write_all_size(&[INT_3])?,
+                s => out.write_all_size(&[INT, *s])?,
             },
             Spec::BinaryFloatingPoint(fmt) => match fmt {
-                InterchangeBinaryFloatingPointFormat::Single => out.write(&[SINGLE_FP])?,
-                InterchangeBinaryFloatingPointFormat::Double => out.write(&[DOUBLE_FP])?,
-                fmt => out.write(&[BINARY_FP])? + fmt.encode(out)?,
+                InterchangeBinaryFloatingPointFormat::Single => out.write_all_size(&[SINGLE_FP])?,
+                InterchangeBinaryFloatingPointFormat::Double => out.write_all_size(&[DOUBLE_FP])?,
+                fmt => out.write_all_size(&[BINARY_FP])? + fmt.encode(out)?,
             },
-            Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
+            Spec::DecimalFloatingPoint(fmt) => {
+                out.write_all_size(&[DECIMAL_FP])? + fmt.encode(out)?
+            }
             Spec::Decimal { precision, scale } => {
-                out.write(&[DECIMAL])?
+                out.write_all_size(&[DECIMAL])?
                     + variable_length_encode_u64(*precision, out)?
                     + variable_length_encode_u64(*scale, out)?
             }
@@ -146,33 +150,35 @@ impl Spec {
                 key_spec,
                 value_spec,
             } => {
-                out.write(&[MAP])?
+                out.write_all_size(&[MAP])?
                     + size.encode(out)?
                     + Spec::to_bytes_internal(key_spec, out)?
                     + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::List { value_spec, size } => {
-                out.write(&[LIST])? + size.encode(out)? + Spec::to_bytes_internal(value_spec, out)?
+                out.write_all_size(&[LIST])?
+                    + size.encode(out)?
+                    + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::String(size, str_fmt) => {
                 if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
-                    out.write(&[UTF8_STRING])?
+                    out.write_all_size(&[UTF8_STRING])?
                 } else {
-                    out.write(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
+                    out.write_all_size(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
                 }
             }
-            Spec::Bytes(size) => out.write(&[BYTES])? + size.encode(out)?,
+            Spec::Bytes(size) => out.write_all_size(&[BYTES])? + size.encode(out)?,
             Spec::Optional(optional_type) => {
-                out.write(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
+                out.write_all_size(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
             }
             Spec::Name { name, spec } => {
-                out.write(&[NAME])?
+                out.write_all_size(&[NAME])?
                     + encode_string_utf8(name, out)?
                     + Spec::to_bytes_internal(spec, out)?
             }
-            Spec::Ref { name } => out.write(&[REF])? + encode_string_utf8(name, out)?,
+            Spec::Ref { name } => out.write_all_size(&[REF])? + encode_string_utf8(name, out)?,
             Spec::Record(fields) => {
-                out.write(&[RECORD])?
+                out.write_all_size(&[RECORD])?
                     + variable_length_encode_u64(fields.len() as u64, out)?
                     + fields
                         .iter()
@@ -185,7 +191,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Tuple(fields) => {
-                out.write(&[TUPLE])?
+                out.write_all_size(&[TUPLE])?
                     + variable_length_encode_u64(fields.len() as u64, out)?
                     + fields
                         .iter()
@@ -193,7 +199,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Enum(variants) => {
-                out.write(&[ENUM])?
+                out.write_all_size(&[ENUM])?
                     + variable_length_encode_u64(variants.len() as u64, out)?
                     + variants
                         .iter()
@@ -206,14 +212,14 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Union(variants) => {
-                out.write(&[UNION])?
+                out.write_all_size(&[UNION])?
                     + variable_length_encode_u64(variants.len() as u64, out)?
                     + variants
                         .iter()
                         .map(|spec| Spec::to_bytes_internal(spec, out))
                         .fold(Ok(0usize), combine)?
             }
-            Spec::Void => out.write(&[VOID])?,
+            Spec::Void => out.write_all_size(&[VOID])?,
         })
     }
 
@@ -326,13 +332,17 @@ impl Spec {
         out: &mut W,
     ) -> Result<usize, io::Error> {
         Ok(match self {
-            Spec::Bool => out.write(&[BOOL])?,
-            Spec::Uint(scale) => out.write(&[UINT, *scale])?,
-            Spec::Int(scale) => out.write(&[INT, *scale])?,
-            Spec::BinaryFloatingPoint(fmt) => out.write(&[BINARY_FP])? + fmt.encode(out)?,
-            Spec::DecimalFloatingPoint(fmt) => out.write(&[DECIMAL_FP])? + fmt.encode(out)?,
+            Spec::Bool => out.write_all_size(&[BOOL])?,
+            Spec::Uint(scale) => out.write_all_size(&[UINT, *scale])?,
+            Spec::Int(scale) => out.write_all_size(&[INT, *scale])?,
+            Spec::BinaryFloatingPoint(fmt) => {
+                out.write_all_size(&[BINARY_FP])? + fmt.encode(out)?
+            }
+            Spec::DecimalFloatingPoint(fmt) => {
+                out.write_all_size(&[DECIMAL_FP])? + fmt.encode(out)?
+            }
             Spec::Decimal { precision, scale } => {
-                out.write(&[DECIMAL])?
+                out.write_all_size(&[DECIMAL])?
                     + variable_length_encode_u64(*precision, out)?
                     + variable_length_encode_u64(*scale, out)?
             }
@@ -341,33 +351,35 @@ impl Spec {
                 key_spec,
                 value_spec,
             } => {
-                out.write(&[MAP])?
+                out.write_all_size(&[MAP])?
                     + size.encode(out)?
                     + Spec::to_bytes_internal(key_spec, out)?
                     + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::List { value_spec, size } => {
-                out.write(&[LIST])? + size.encode(out)? + Spec::to_bytes_internal(value_spec, out)?
+                out.write_all_size(&[LIST])?
+                    + size.encode(out)?
+                    + Spec::to_bytes_internal(value_spec, out)?
             }
             Spec::String(size, str_fmt) => {
                 if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
-                    out.write(&[UTF8_STRING])?
+                    out.write_all_size(&[UTF8_STRING])?
                 } else {
-                    out.write(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
+                    out.write_all_size(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
                 }
             }
-            Spec::Bytes(size) => out.write(&[BYTES])? + size.encode(out)?,
+            Spec::Bytes(size) => out.write_all_size(&[BYTES])? + size.encode(out)?,
             Spec::Optional(optional_type) => {
-                out.write(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
+                out.write_all_size(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
             }
             Spec::Name { name, spec } => {
-                out.write(&[NAME])?
+                out.write_all_size(&[NAME])?
                     + encode_string_utf8(name, out)?
                     + Spec::to_bytes_internal(spec, out)?
             }
-            Spec::Ref { name } => out.write(&[REF])? + encode_string_utf8(name, out)?,
+            Spec::Ref { name } => out.write_all_size(&[REF])? + encode_string_utf8(name, out)?,
             Spec::Record(fields) => {
-                out.write(&[RECORD])?
+                out.write_all_size(&[RECORD])?
                     + variable_length_encode_u64(fields.len() as u64, out)?
                     + fields
                         .iter()
@@ -380,7 +392,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Tuple(fields) => {
-                out.write(&[TUPLE])?
+                out.write_all_size(&[TUPLE])?
                     + variable_length_encode_u64(fields.len() as u64, out)?
                     + fields
                         .iter()
@@ -388,7 +400,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Enum(variants) => {
-                out.write(&[ENUM])?
+                out.write_all_size(&[ENUM])?
                     + variable_length_encode_u64(variants.len() as u64, out)?
                     + variants
                         .iter()
@@ -401,14 +413,14 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Union(variants) => {
-                out.write(&[UNION])?
+                out.write_all_size(&[UNION])?
                     + variable_length_encode_u64(variants.len() as u64, out)?
                     + variants
                         .iter()
                         .map(|spec| Spec::to_bytes_internal(spec, out))
                         .fold(Ok(0usize), combine)?
             }
-            Spec::Void => out.write(&[VOID])?,
+            Spec::Void => out.write_all_size(&[VOID])?,
         })
     }
 }
@@ -416,7 +428,7 @@ impl Spec {
 #[inline]
 fn encode_string_utf8<W: Write>(string: &String, out: &mut W) -> Result<usize, io::Error> {
     let b = string.as_bytes();
-    Ok(variable_length_encode_u64(b.len() as u64, out)? + out.write(b)?)
+    Ok(variable_length_encode_u64(b.len() as u64, out)? + out.write_all_size(b)?)
 }
 
 fn decode_utf8_string<R: Read>(input: &mut R) -> Result<String, SpecParsingError> {
@@ -483,26 +495,48 @@ impl From<util::VariableLengthDecodingError> for SpecParsingError {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Trace, Finalize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub enum Size {
-    Fixed(u64),
     Variable,
+    Fixed(u64),
+    Range(SizeRange),
+}
+
+/// Size Range start and end inclusive
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub struct SizeRange {
+    pub start: u64,
+    pub end: u64,
 }
 
 impl Size {
     #[inline]
     pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
         match self {
-            Size::Fixed(n) => combine(out.write(&[0]), variable_length_encode_u64(*n, out)),
-            Size::Variable => out.write(&[1]),
+            Size::Variable => out.write_all_size(&[0]),
+            Size::Fixed(n) => combine(
+                out.write_all_size(&[1]),
+                variable_length_encode_u64(*n, out),
+            ),
+            Size::Range(r) => combine(
+                combine(
+                    out.write_all_size(&[2]),
+                    variable_length_encode_u64(r.start, out),
+                ),
+                variable_length_encode_u64(r.end, out),
+            ),
         }
     }
 
     #[inline]
     pub(crate) fn decode<R: Read>(input: &mut R) -> Result<Size, SpecParsingError> {
         match next_byte(input)? {
-            0 => Ok(Size::Fixed(decode_u64(input)?)),
-            1 => Ok(Size::Variable),
+            0 => Ok(Self::Variable),
+            1 => Ok(Self::Fixed(decode_u64(input)?)),
+            2 => Ok(Self::Range(SizeRange {
+                start: decode_u64(input)?,
+                end: decode_u64(input)?,
+            })),
             b => Err(SpecParsingError::UnknownSizeFormatFlag(b)),
         }
     }
@@ -541,11 +575,11 @@ impl InterchangeBinaryFloatingPointFormat {
     #[inline]
     pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
         match self {
-            InterchangeBinaryFloatingPointFormat::Half => out.write(&[0]),
-            InterchangeBinaryFloatingPointFormat::Single => out.write(&[1]),
-            InterchangeBinaryFloatingPointFormat::Double => out.write(&[2]),
-            InterchangeBinaryFloatingPointFormat::Quadruple => out.write(&[3]),
-            InterchangeBinaryFloatingPointFormat::Octuple => out.write(&[4]),
+            InterchangeBinaryFloatingPointFormat::Half => out.write_all_size(&[0]),
+            InterchangeBinaryFloatingPointFormat::Single => out.write_all_size(&[1]),
+            InterchangeBinaryFloatingPointFormat::Double => out.write_all_size(&[2]),
+            InterchangeBinaryFloatingPointFormat::Quadruple => out.write_all_size(&[3]),
+            InterchangeBinaryFloatingPointFormat::Octuple => out.write_all_size(&[4]),
         }
     }
 
@@ -599,9 +633,9 @@ impl InterchangeDecimalFloatingPointFormat {
     #[inline]
     pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
         match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => out.write(&[0]),
-            InterchangeDecimalFloatingPointFormat::Dec64 => out.write(&[1]),
-            InterchangeDecimalFloatingPointFormat::Dec128 => out.write(&[2]),
+            InterchangeDecimalFloatingPointFormat::Dec32 => out.write_all_size(&[0]),
+            InterchangeDecimalFloatingPointFormat::Dec64 => out.write_all_size(&[1]),
+            InterchangeDecimalFloatingPointFormat::Dec128 => out.write_all_size(&[2]),
         }
     }
 
@@ -630,9 +664,9 @@ impl StringEncodingFmt {
     #[inline]
     pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
         match self {
-            StringEncodingFmt::Utf8 => out.write(&[0]),
-            StringEncodingFmt::Utf16 => out.write(&[1]),
-            StringEncodingFmt::Ascii => out.write(&[2]),
+            StringEncodingFmt::Utf8 => out.write_all_size(&[0]),
+            StringEncodingFmt::Utf16 => out.write_all_size(&[1]),
+            StringEncodingFmt::Ascii => out.write_all_size(&[2]),
         }
     }
 
@@ -760,7 +794,7 @@ mod tests {
                 }
                 SpecParsingErrorKind::UnknownStringFormatFlag => {
                     vec![Spec::read_from_bytes(&mut Cursor::new(&[
-                        STRING, 0x01, NEVER_USED,
+                        STRING, 0x00, NEVER_USED,
                     ]))]
                 }
                 SpecParsingErrorKind::UnknownSizeFormatFlag => {
@@ -772,7 +806,7 @@ mod tests {
                     vec![
                         //way too big a size
                         Spec::read_from_bytes(&mut Cursor::new(&[
-                            BYTES, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                            BYTES, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                             0xFF, 0xFF, 0x01,
                         ])),
                     ]

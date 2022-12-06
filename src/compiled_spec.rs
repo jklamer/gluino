@@ -298,16 +298,18 @@ pub enum CompiledSpecStructure {
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat),
     Decimal(DecimalFmt),
     Map {
+        #[unsafe_ignore_trace]
         size: Size,
         key_spec: Box<CompiledSpec>,
         value_spec: Box<CompiledSpec>,
     },
     List {
+        #[unsafe_ignore_trace]
         size: Size,
         value_spec: Box<CompiledSpec>,
     },
-    String(Size, StringEncodingFmt),
-    Bytes(Size),
+    String(#[unsafe_ignore_trace] Size, StringEncodingFmt),
+    Bytes(#[unsafe_ignore_trace] Size),
     Optional(Box<CompiledSpec>),
     Name(String),
     Record {

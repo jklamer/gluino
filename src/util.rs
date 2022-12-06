@@ -1,5 +1,17 @@
 use std::io::{self, Read, Write};
 
+pub trait WriteAllReturnSize {
+    fn write_all_size(&mut self, bytes: &[u8]) -> Result<usize, io::Error>;
+}
+
+impl<W: Write> WriteAllReturnSize for W {
+    #[inline]
+    fn write_all_size(&mut self, bytes: &[u8]) -> Result<usize, io::Error> {
+        self.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+}
+
 const MAX_LANG_BYTES: usize = 16;
 const MAX_SYSTEM_BYTES_VLE: usize = MAX_LANG_BYTES * 8 / 7 + 1;
 
@@ -12,7 +24,7 @@ pub fn variable_length_encode_u64<W: Write>(mut z: u64, out: &mut W) -> Result<u
         n += 1;
     }
     encoding[n] = (z & 0x7F) as u8;
-    out.write(&encoding[0..=n])
+    out.write_all_size(&encoding[0..=n])
 }
 pub fn variable_length_decode_u64<R: Read>(
     input: &mut R,
@@ -29,7 +41,7 @@ pub fn variable_length_encode_u128<W: Write>(mut z: u128, out: &mut W) -> Result
         n += 1;
     }
     encoding[n] = (z & 0x7F) as u8;
-    out.write(&encoding[0..=n])
+    out.write_all_size(&encoding[0..=n])
 }
 
 pub fn variable_length_decode_u128<R: Read>(
