@@ -1,6 +1,6 @@
 pub mod compiled_spec;
 mod fingerprint;
-mod ser;
+pub mod serde;
 pub mod spec;
 #[cfg(test)]
 mod test_utils;
