@@ -1,4 +1,7 @@
 mod ser_impls;
+mod de_imples;
+#[macro_use]
+mod encode;
 
 use std::{
     collections::HashMap,
@@ -39,10 +42,10 @@ pub enum GluinoValue {
     Uint64(u64),
     Uint128(u128),
     Bool(bool),
-    String(String),
-    Bytes(Vec<u8>),
     Float(f32),
     Double(f64),
+    String(String),
+    Bytes(Vec<u8>),
     /// Compound
     Optional(Option<Box<GluinoValue>>),
     List(Vec<GluinoValue>),
@@ -71,6 +74,15 @@ where
         value: GluinoValue,
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError>;
+}
+
+pub trait GluinoValueDe<R>
+where
+    R: Read,
+{
+    fn deserialize(
+        reader: &mut R,
+    ) -> Result<GluinoValue, GluinoDeserializationError>;
 }
 
 pub enum GluinoSerializationError {
@@ -111,6 +123,16 @@ pub enum GluinoSerializationError {
 impl From<io::Error> for GluinoSerializationError {
     fn from(e: io::Error) -> Self {
         GluinoSerializationError::WriteError(e)
+    }
+}
+
+pub enum GluinoDeserializationError {
+    ReadError(io::Error),
+}
+
+impl From<io::Error> for GluinoDeserializationError {
+    fn from(e: io::Error) -> Self {
+        GluinoDeserializationError::ReadError(e)
     }
 }
 
@@ -278,18 +300,4 @@ where
             }
         },
     }
-}
-
-
-pub trait GluinoValueDe<R>
-where
-    R: Read,
-{
-    fn deserialize(
-        input: &mut R,
-    ) -> Result<GluinoValue, GluinoDeserializationError>;
-}
-
-pub enum GluinoDeserializationError {
-
 }

@@ -234,57 +234,6 @@ impl CompiledSpec {
             ),
         }
     }
-
-    // fn push_down_resolved(&mut self, name: &String, resolved_spec: &Arc<CompiledSpec>) {
-    //     if self.named_schema.contains_key(name) {
-    //         self.named_schema.insert(name.clone(), resolved_spec.clone());
-    //     }
-
-    //     match &mut self.structure {
-    //         CompiledSpecStructure::Map {ref mut key_spec, ref mut value_spec , ..} => {
-    //             key_spec.push_down_resolved(name, resolved_spec);
-    //             value_spec.push_down_resolved(name, resolved_spec);
-    //         },
-    //         CompiledSpecStructure::List {ref mut value_spec, ..} => {
-    //             value_spec.push_down_resolved(name, resolved_spec);
-    //         },
-    //         CompiledSpecStructure::Optional(ref mut spec) => {
-    //             spec.push_down_resolved(name, resolved_spec);
-    //         },
-    //         CompiledSpecStructure::Record { ref mut field_to_spec , ..} => {
-    //             for (_, spec) in field_to_spec.iter_mut() {
-    //                 spec.push_down_resolved(name, resolved_spec);
-    //             }
-    //         },
-    //         CompiledSpecStructure::Tuple(ref mut fields) => {
-    //             for field in fields.iter_mut() {
-    //                 field.push_down_resolved(name, resolved_spec);
-    //             }
-    //         },
-    //         CompiledSpecStructure::Enum { ref mut variant_to_spec, ..} => {
-    //             for (_, spec) in variant_to_spec.iter_mut() {
-    //                 spec.push_down_resolved(name, resolved_spec);
-    //             }
-    //         },
-    //         CompiledSpecStructure::Union(ref mut variants) => {
-    //             for variant in variants.iter_mut() {
-    //                 variant.push_down_resolved(name, resolved_spec);
-    //             }
-    //         },
-    //         CompiledSpecStructure::Name(_) => {
-    //             ()
-    //         }
-    //         CompiledSpecStructure::Void |
-    //         CompiledSpecStructure::Bool |
-    //         CompiledSpecStructure::Uint(_) |
-    //         CompiledSpecStructure::Int(_) |
-    //         CompiledSpecStructure::BinaryFloatingPoint(_) |
-    //         CompiledSpecStructure::DecimalFloatingPoint(_) |
-    //         CompiledSpecStructure::Decimal(_) |
-    //         CompiledSpecStructure::String(_, _) |
-    //         CompiledSpecStructure::Bytes(_) => {()}
-    //     }
-    // }
 }
 
 #[derive(Eq, PartialEq, Clone, EnumDiscriminants, Trace, Finalize)]

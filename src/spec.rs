@@ -3,7 +3,6 @@ use gc::{Finalize, Trace};
 use std::{
     io::Read,
     io::{self, Write},
-    ops::{Range, RangeInclusive},
 };
 use strum_macros::{EnumDiscriminants, EnumIter};
 
