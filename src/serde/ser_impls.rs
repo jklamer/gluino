@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write};
+use std::{collections::HashMap, io::Write, marker::PhantomData};
 
 use gc::{Finalize, Trace};
 
@@ -9,7 +9,9 @@ use crate::{
     util::{variable_length_encode_u64, WriteAllReturnSize},
 };
 
-use super::{GluinoSerializationError, GluinoValue, GluinoValueKind, GluinoValueSer};
+use super::{
+    encode::Encodable, GluinoSerializationError, GluinoValue, GluinoValueKind, GluinoValueSer,
+};
 
 trait SerSizeValidator {
     fn valiate_size(&self, size: u64) -> bool;
@@ -82,122 +84,27 @@ where
 }
 
 #[derive(Trace, Finalize)]
-pub(crate) struct I8ValueSer;
+pub(crate) struct NativeSingleSer<E: Encodable> {
+    _d: PhantomData<E>,
+}
 
-impl<W> GluinoValueSer<W> for I8ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Int8(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Int8,
-                actual_value_kind: value.into(),
-            })
-        }
+impl<E: Encodable> NativeSingleSer<E> {
+    pub(crate) fn new() -> Self {
+        NativeSingleSer::<E> { _d: PhantomData }
     }
 }
 
-#[derive(Trace, Finalize)]
-pub(crate) struct I16ValueSer;
-
-impl<W> GluinoValueSer<W> for I16ValueSer
+impl<W, E> GluinoValueSer<W> for NativeSingleSer<E>
 where
+    E: Encodable,
     W: Write,
 {
-    #[inline]
     fn serialize(
         &self,
         value: GluinoValue,
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Int16(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Int16,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct I32ValueSer;
-
-impl<W> GluinoValueSer<W> for I32ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Int32(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Int32,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct I64ValueSer;
-
-impl<W> GluinoValueSer<W> for I64ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Int64(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Int64,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct I128ValueSer;
-
-impl<W> GluinoValueSer<W> for I128ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Int128(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Int128,
-                actual_value_kind: value.into(),
-            })
-        }
+        Ok(E::extract(value)?.encode(writer)?)
     }
 }
 
@@ -235,126 +142,6 @@ where
 }
 
 #[derive(Trace, Finalize)]
-pub(crate) struct U8ValueSer;
-
-impl<W> GluinoValueSer<W> for U8ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Uint8(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Uint8,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct U16ValueSer;
-
-impl<W> GluinoValueSer<W> for U16ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Uint16(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Uint16,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct U32ValueSer;
-
-impl<W> GluinoValueSer<W> for U32ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Uint32(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Uint32,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct U64ValueSer;
-
-impl<W> GluinoValueSer<W> for U64ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Uint64(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Uint64,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct U128ValueSer;
-
-impl<W> GluinoValueSer<W> for U128ValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Uint128(v) = value {
-            Ok(writer.write_all_size(&v.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Uint128,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
 pub(crate) struct BigUintValueSer {
     pub(crate) n: u8,
 }
@@ -382,54 +169,6 @@ where
         } else {
             Err(GluinoSerializationError::ValueKindMismatch {
                 expected_value_kind: GluinoValueKind::BigUint,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct FloatValueSer;
-
-impl<W> GluinoValueSer<W> for FloatValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Float(f) = value {
-            Ok(writer.write_all_size(&f.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Float,
-                actual_value_kind: value.into(),
-            })
-        }
-    }
-}
-
-#[derive(Trace, Finalize)]
-pub(crate) struct DoubleValueSer;
-
-impl<W> GluinoValueSer<W> for DoubleValueSer
-where
-    W: Write,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        if let GluinoValue::Double(f) = value {
-            Ok(writer.write_all_size(&f.to_le_bytes())?)
-        } else {
-            Err(GluinoSerializationError::ValueKindMismatch {
-                expected_value_kind: GluinoValueKind::Double,
                 actual_value_kind: value.into(),
             })
         }

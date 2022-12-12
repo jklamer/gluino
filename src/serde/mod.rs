@@ -1,11 +1,11 @@
-mod ser_impls;
 mod de_imples;
+mod ser_impls;
 #[macro_use]
 mod encode;
 
 use std::{
     collections::HashMap,
-    io::{self, Write, Read},
+    io::{self, Read, Write},
 };
 
 use gc::{Finalize, Gc, GcCell, Trace};
@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use self::ser_impls::*;
+use self::{ser_impls::*, de_imples::{NativeSingleDe, VoidGluinoValueDe}};
 
 pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
@@ -80,9 +80,7 @@ pub trait GluinoValueDe<R>
 where
     R: Read,
 {
-    fn deserialize(
-        reader: &mut R,
-    ) -> Result<GluinoValue, GluinoDeserializationError>;
+    fn deserialize(&self, reader: &mut R) -> Result<GluinoValue, GluinoDeserializationError>;
 }
 
 pub enum GluinoSerializationError {
@@ -151,6 +149,17 @@ where
     }
 }
 
+impl<R> GluinoValueDe<R> for Gc<GcCell<Box<dyn GluinoValueDe<R>>>>
+where
+    for<'a> R: Read + 'a,
+    for<'x> (dyn GluinoValueDe<R>): Trace + Finalize + 'x,
+{
+    #[inline]
+    fn deserialize(&self, reader: &mut R) -> Result<GluinoValue, GluinoDeserializationError> {
+        self.borrow().deserialize(reader)
+    }
+}
+
 pub fn get_unit_serialization_function<W>(spec: &CompiledSpec) -> Box<dyn GluinoValueSer<W>>
 where
     for<'ser> (dyn GluinoValueSer<W>): Trace + Finalize + 'ser,
@@ -169,32 +178,32 @@ where
 {
     match spec.structure() {
         CompiledSpecStructure::Void => Box::new(VoidGluinoValueSer),
-        CompiledSpecStructure::Bool => Box::new(BoolGluinoValueSer),
+        CompiledSpecStructure::Bool => Box::new(NativeSingleSer::<bool>::new()),
         CompiledSpecStructure::Uint(n) => match n {
-            0 => Box::new(U8ValueSer),
-            1 => Box::new(U16ValueSer),
-            2 => Box::new(U32ValueSer),
-            3 => Box::new(U64ValueSer),
-            4 => Box::new(U128ValueSer),
+            0 => Box::new(NativeSingleSer::<u8>::new()),
+            1 => Box::new(NativeSingleSer::<u16>::new()),
+            2 => Box::new(NativeSingleSer::<u32>::new()),
+            3 => Box::new(NativeSingleSer::<u64>::new()),
+            4 => Box::new(NativeSingleSer::<u128>::new()),
             _ => {
                 let n = n.clone();
                 Box::new(BigUintValueSer { n })
             }
         },
         CompiledSpecStructure::Int(n) => match n {
-            0 => Box::new(I8ValueSer),
-            1 => Box::new(I16ValueSer),
-            2 => Box::new(I32ValueSer),
-            3 => Box::new(I64ValueSer),
-            4 => Box::new(I128ValueSer),
+            0 => Box::new(NativeSingleSer::<i8>::new()),
+            1 => Box::new(NativeSingleSer::<i16>::new()),
+            2 => Box::new(NativeSingleSer::<i32>::new()),
+            3 => Box::new(NativeSingleSer::<i64>::new()),
+            4 => Box::new(NativeSingleSer::<i128>::new()),
             _ => {
                 let n = n.clone();
                 Box::new(BigIntValueSer { n })
             }
         },
         CompiledSpecStructure::BinaryFloatingPoint(fmt) => match fmt {
-            InterchangeBinaryFloatingPointFormat::Single => Box::new(FloatValueSer),
-            InterchangeBinaryFloatingPointFormat::Double => Box::new(DoubleValueSer),
+            InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleSer::<f32>::new()),
+            InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleSer::<f64>::new()),
             _ => {
                 let fmt = fmt.clone();
                 Box::new(BinaryFloatingPointValueSer { fmt })
@@ -299,5 +308,56 @@ where
                 Box::new(named_ser)
             }
         },
+    }
+}
+
+pub fn get_unit_deserialization_function<R>(spec: &CompiledSpec) -> Box<dyn GluinoValueDe<R>>
+where
+    R: Read,
+{
+    match spec.structure() {
+        CompiledSpecStructure::Void => Box::new(VoidGluinoValueDe),
+        CompiledSpecStructure::Bool => Box::new(NativeSingleDe::<bool>::new()),
+        CompiledSpecStructure::Uint(n) => {
+            match n {
+                0 => Box::new(NativeSingleDe::<u8>::new()),
+                1 => Box::new(NativeSingleDe::<u16>::new()),
+                2 => Box::new(NativeSingleDe::<u32>::new()),
+                3 => Box::new(NativeSingleDe::<u64>::new()),
+                4 => Box::new(NativeSingleDe::<u128>::new()),
+                _ => todo!()
+            }
+        },
+        CompiledSpecStructure::Int(n) => {
+            match n {
+                0 => Box::new(NativeSingleDe::<i8>::new()),
+                1 => Box::new(NativeSingleDe::<i16>::new()),
+                2 => Box::new(NativeSingleDe::<i32>::new()),
+                3 => Box::new(NativeSingleDe::<i64>::new()),
+                4 => Box::new(NativeSingleDe::<i128>::new()),
+                _ => todo!()
+            }
+        },
+        CompiledSpecStructure::BinaryFloatingPoint(fmt) => {
+            match fmt {
+                InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleDe::<f32>::new()),
+                InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleDe::<f64>::new()),
+                InterchangeBinaryFloatingPointFormat::Half => todo!(),
+                InterchangeBinaryFloatingPointFormat::Quadruple => todo!(),
+                InterchangeBinaryFloatingPointFormat::Octuple => todo!(),
+            }
+        },
+        CompiledSpecStructure::DecimalFloatingPoint(_) => todo!(),
+        CompiledSpecStructure::Decimal(_) => todo!(),
+        CompiledSpecStructure::Map { size, key_spec, value_spec } => todo!(),
+        CompiledSpecStructure::List { size, value_spec } => todo!(),
+        CompiledSpecStructure::String(_, _) => todo!(),
+        CompiledSpecStructure::Bytes(_) => todo!(),
+        CompiledSpecStructure::Optional(_) => todo!(),
+        CompiledSpecStructure::Record { fields, field_to_spec, field_to_index } => todo!(),
+        CompiledSpecStructure::Tuple(_) => todo!(),
+        CompiledSpecStructure::Enum { variants, variant_to_spec } => todo!(),
+        CompiledSpecStructure::Union(_) => todo!(),
+        CompiledSpecStructure::Name(_) => todo!(),
     }
 }
