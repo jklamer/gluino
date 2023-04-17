@@ -1,4 +1,4 @@
-mod de_imples;
+mod de_impls;
 mod ser_impls;
 #[macro_use]
 mod encode;
@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use self::{ser_impls::*, de_imples::{NativeSingleDe, VoidGluinoValueDe}};
+use self::{ser_impls::*, de_impls::{NativeSingleDe, VoidGluinoValueDe}};
 
 pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
