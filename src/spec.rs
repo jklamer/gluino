@@ -13,6 +13,7 @@ use crate::{
         WriteAllReturnSize,
     },
 };
+use crate::serde::GluinoValue;
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(SpecKind))]
@@ -50,6 +51,7 @@ pub enum Spec {
     Tuple(Vec<Spec>),
     Enum(Vec<(String, Spec)>),
     Union(Vec<Spec>),
+    ConstSet(Box<Spec>, Vec<GluinoValue>),
     Void,
 }
 
@@ -325,7 +327,7 @@ impl Spec {
     }
 
     /// To longform bytes creates serialized view of spec without use of alias bytes for compression
-    /// This byte representation is used for indentification purposes
+    /// This byte representation is used for identification purposes
     pub(crate) fn to_longform_bytes_internal<W: Write>(
         &self,
         out: &mut W,
@@ -483,8 +485,8 @@ impl From<io::Error> for SpecParsingError {
     }
 }
 
-impl From<util::VariableLengthDecodingError> for SpecParsingError {
-    fn from(e: util::VariableLengthDecodingError) -> Self {
+impl From<VariableLengthDecodingError> for SpecParsingError {
+    fn from(e: VariableLengthDecodingError) -> Self {
         match e {
             VariableLengthDecodingError::IncompleteVariableLengthEncoding => {
                 SpecParsingError::UnexpectedEndOfBytes
@@ -499,9 +501,12 @@ pub enum Size {
     Variable,
     Fixed(u64),
     Range(SizeRange),
+    // Inclusive
+    GreaterThan(u64),
+    // Exclusive
+    LessThan(u64),
 }
 
-/// Size Range start and end inclusive
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct SizeRange {
     pub start: u64,

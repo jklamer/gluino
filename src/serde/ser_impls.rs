@@ -14,22 +14,25 @@ use super::{
 };
 
 trait SerSizeValidator {
-    fn valiate_size(&self, size: u64) -> bool;
+    fn validate_size(&self, size: u64) -> bool;
     fn need_write_size(&self) -> bool;
 }
 
 impl SerSizeValidator for Size {
-    fn valiate_size(&self, data_size: u64) -> bool {
+    #[inline]
+    fn validate_size(&self, data_size: u64) -> bool {
         match self {
             Self::Variable => true,
             Self::Fixed(n) => n == &data_size,
-            Self::Range(r) => r.start <= data_size && data_size <= r.end,
+            Self::Range(r) => r.start <= data_size && data_size < r.end,
+            Self::GreaterThan(n) => n <= &data_size,
+            Self::LessThan(n) => n > &data_size,
         }
     }
 
     fn need_write_size(&self) -> bool {
         match self {
-            Self::Variable | Self::Range(_) => true,
+            Self::Variable | Self::Range(_) | Self::LessThan(_) | Self::GreaterThan(_) => true,
             Self::Fixed(_) => false,
         }
     }
@@ -292,14 +295,13 @@ where
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::Bytes(bytes) = value {
             let size = bytes.len() as u64;
-            if self.spec_size.valiate_size(size) {
+            if self.spec_size.validate_size(size) {
                 let v_size = if self.spec_size.need_write_size() {
                     variable_length_encode_u64(size, writer)?
                 } else {
                     0
                 };
-                writer.write_all_size(&bytes[0..bytes.len()])?;
-                Ok(v_size + bytes.len())
+                Ok(v_size +  writer.write_all_size(&bytes[0..bytes.len()])?)
             } else {
                 Err(GluinoSerializationError::IncorrectDataSize {
                     expected_size: self.spec_size.clone(),
@@ -334,7 +336,7 @@ where
         if let GluinoValue::String(s) = value {
             let bytes = s.as_bytes();
             let size = bytes.len() as u64;
-            if self.spec_size.valiate_size(size) {
+            if self.spec_size.validate_size(size) {
                 let v_size = if self.spec_size.need_write_size() {
                     variable_length_encode_u64(size, writer)?
                 } else {
@@ -376,14 +378,13 @@ where
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::NonUtf8String(bytes) = value {
             let size = bytes.len() as u64;
-            if self.spec_size.valiate_size(size) {
+            if self.spec_size.validate_size(size) {
                 let v_size = if self.spec_size.need_write_size() {
                     variable_length_encode_u64(size, writer)?
                 } else {
                     0
                 };
-                writer.write_all_size(&bytes)?;
-                Ok(v_size + bytes.len())
+                Ok(v_size + writer.write_all_size(&bytes)?)
             } else {
                 Err(GluinoSerializationError::IncorrectDataSize {
                     expected_size: self.spec_size.clone(),
@@ -420,7 +421,7 @@ where
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::Map(values) = value {
             let size = values.len() as u64;
-            if self.spec_size.valiate_size(size) {
+            if self.spec_size.validate_size(size) {
                 let written = if self.spec_size.need_write_size() {
                     Ok(variable_length_encode_u64(size, writer)?)
                 } else {
@@ -469,7 +470,7 @@ where
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::List(values) = value {
             let size = values.len() as u64;
-            if self.spec_size.valiate_size(size) {
+            if self.spec_size.validate_size(size) {
                 let written = if self.spec_size.need_write_size() {
                     Ok(variable_length_encode_u64(size, writer)?)
                 } else {

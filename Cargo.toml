@@ -7,10 +7,11 @@ readme = "README.md"
 repository = "https://github.com/jklamer/Gluino"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 description = "A library for working with/serializing data using the Gluino spec."
+
 [dependencies]
-serde = {version = "1.0.143", features = ["derive"] }
-strum = {version = "0.24.1", features = ["derive"] }
-strum_macros = {version = "0.24.1"}
+serde = {version = "1.0.160", features = ["derive"] }
+strum = {version = "0.25.0", features = ["derive"] }
+strum_macros = {version = "0.25.3" }
 hex = "0.4.3"
 sha2 = "0.10.6"
-gc = {version="0.4.1", features = ["derive"]}
+gc = {version= "0.5.0", features = ["derive"]}
