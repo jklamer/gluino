@@ -12,6 +12,7 @@ use std::{
     hash::Hash,
 };
 use strum::{EnumDiscriminants, EnumIter};
+use crate::serde::GluinoValue;
 
 #[derive(Clone, Trace, Finalize)]
 pub enum CompiledSpecRef {
@@ -236,7 +237,7 @@ impl CompiledSpec {
     }
 }
 
-#[derive(Eq, PartialEq, Clone, EnumDiscriminants, Trace, Finalize)]
+#[derive(PartialEq, Clone, EnumDiscriminants, Trace, Finalize)]
 #[strum_discriminants(derive(EnumIter))]
 pub enum CompiledSpecStructure {
     Void,
@@ -272,6 +273,7 @@ pub enum CompiledSpecStructure {
         variant_to_spec: HashMap<String, CompiledSpec>,
     },
     Union(Vec<CompiledSpec>),
+    ConstSet(Box<CompiledSpec>, Vec<GluinoValue>),
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
@@ -475,7 +477,8 @@ pub(crate) fn compile_structure_internal(
                     duplicate_variants,
                 ))
             }
-        }
+        },
+        Spec::ConstSet(cont_spec, values) => {},
         Spec::Void => Ok(CompiledSpecStructure::Void),
     }
 }

@@ -13,7 +13,6 @@ use crate::{
         WriteAllReturnSize,
     },
 };
-use crate::serde::GluinoValue;
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(SpecKind))]
@@ -51,7 +50,7 @@ pub enum Spec {
     Tuple(Vec<Spec>),
     Enum(Vec<(String, Spec)>),
     Union(Vec<Spec>),
-    ConstSet(Box<Spec>, Vec<GluinoValue>),
+    ConstSet(Box<Spec>, Vec<Vec<u8>>),
     Void,
 }
 
@@ -422,6 +421,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Void => out.write_all_size(&[VOID])?,
+            Spec::ConstSet(_, _) => {}
         })
     }
 }
