@@ -7,8 +7,8 @@ use std::{
     collections::HashMap,
     io::{self, Read, Write},
 };
-
-use gc::{Finalize, Gc, GcCell, Trace};
+use std::cell::RefCell;
+use std::rc::Rc;
 use strum::{EnumDiscriminants, EnumIter};
 
 use crate::{
@@ -18,14 +18,15 @@ use crate::{
         StringEncodingFmt,
     },
 };
-
+use crate::serde::encode::Encodable;
+use crate::util::WriteAllReturnSize;
 use self::{ser_impls::*, de_impls::{NativeSingleDe, VoidGluinoValueDe}};
 
 pub trait GluinoSpecType {
     fn get_spec() -> CompiledSpec;
 }
 
-#[derive(Debug, PartialEq, Clone, EnumDiscriminants)]
+#[derive(Eq, Debug, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(name(GluinoValueKind))]
 #[strum_discriminants(derive(EnumIter))]
 pub enum GluinoValue {
@@ -42,8 +43,8 @@ pub enum GluinoValue {
     Uint64(u64),
     Uint128(u128),
     Bool(bool),
-    Float(f32),
-    Double(f64),
+    Float(F32),
+    Double(F64),
     String(String),
     Bytes(Vec<u8>),
     /// Compound
@@ -61,9 +62,58 @@ pub enum GluinoValue {
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat, Vec<u8>),
     NonUtf8String(Vec<u8>),
     Decimal(Vec<u8>),
+    ConstSet(u64),
     //void
     Void,
 }
+
+// Custom struct to wrap f32 for Eq and Ord
+#[derive(Debug, Clone, Copy)]
+pub struct F32(f32);
+
+impl AsRef<f32> for F32 {
+    fn as_ref(&self) -> &f32 {
+        &self.0
+    }
+}
+
+impl PartialEq for F32 {
+    fn eq(&self, other: &Self) -> bool {
+        // For Eq, we want NaN == NaN.
+        // For all other values, compare them normally.
+        if self.0.is_nan() {
+            other.0.is_nan() // Treat NaNs as equal for the purpose of Eq
+        } else {
+            self.0 == other.0 // Standard comparison for non-NaNs
+        }
+    }
+}
+
+// f32 is not Ord because NaN cannot be ordered.
+// Implementing Ord also requires that NaN is consistent with the ordering.
+impl Eq for F32 {} // The Eq trait requires no methods to implement it.
+
+// Custom struct to wrap f64 for Eq and Ord
+#[derive(Debug, Clone, Copy)]
+pub struct F64(f64);
+
+impl AsRef<f64> for F64 {
+    fn as_ref(&self) -> &f64 {
+        &self.0
+    }
+}
+
+impl PartialEq for F64 {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.is_nan() {
+            other.0.is_nan()
+        } else {
+            self.0 == other.0
+        }
+    }
+}
+
+impl Eq for F64 {}
 
 pub trait GluinoValueSer<W>
 where
@@ -74,6 +124,18 @@ where
         value: GluinoValue,
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError>;
+}
+impl <W> GluinoValueSer<W> for Rc<RefCell<Box<dyn GluinoValueSer<W>>>>
+where
+    W: Write,
+{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        self.borrow().serialize(value, writer)
+    }
 }
 
 pub trait GluinoValueDe<R>
@@ -116,6 +178,7 @@ pub enum GluinoSerializationError {
         expext_bytes: usize,
         actual_bytes: usize,
     },
+    UnknownConstSetIndex (u64),
 }
 
 impl From<io::Error> for GluinoSerializationError {
@@ -134,35 +197,9 @@ impl From<io::Error> for GluinoDeserializationError {
     }
 }
 
-impl<W> GluinoValueSer<W> for Gc<GcCell<Box<dyn GluinoValueSer<W>>>>
-where
-    for<'a> W: Write + 'a,
-    for<'x> (dyn GluinoValueSer<W>): Trace + Finalize + 'x,
-{
-    #[inline]
-    fn serialize(
-        &self,
-        value: GluinoValue,
-        writer: &mut W,
-    ) -> Result<usize, GluinoSerializationError> {
-        self.borrow().serialize(value, writer)
-    }
-}
-
-impl<R> GluinoValueDe<R> for Gc<GcCell<Box<dyn GluinoValueDe<R>>>>
-where
-    for<'a> R: Read + 'a,
-    for<'x> (dyn GluinoValueDe<R>): Trace + Finalize + 'x,
-{
-    #[inline]
-    fn deserialize(&self, reader: &mut R) -> Result<GluinoValue, GluinoDeserializationError> {
-        self.borrow().deserialize(reader)
-    }
-}
-
 pub fn get_unit_serialization_function<W>(spec: &CompiledSpec) -> Box<dyn GluinoValueSer<W>>
 where
-    for<'ser> (dyn GluinoValueSer<W>): Trace + Finalize + 'ser,
+    for<'ser> (dyn GluinoValueSer<W>): 'ser,
     for<'write> W: Write + 'write,
 {
     get_unit_serialization_function_internal::<W>(spec, &mut HashMap::new())
@@ -170,10 +207,10 @@ where
 
 fn get_unit_serialization_function_internal<W>(
     spec: &CompiledSpec,
-    named_unit_sers: &mut HashMap<String, Gc<GcCell<Box<dyn GluinoValueSer<W>>>>>,
+    named_unit_sers: &mut HashMap<String, Rc<RefCell<Box<dyn GluinoValueSer<W>>>>>,
 ) -> Box<dyn GluinoValueSer<W>>
 where
-    for<'ser> (dyn GluinoValueSer<W>): Trace + Finalize + 'ser,
+    for<'ser> (dyn GluinoValueSer<W>): 'ser,
     for<'write> W: Write + 'write,
 {
     match spec.structure() {
@@ -202,8 +239,8 @@ where
             }
         },
         CompiledSpecStructure::BinaryFloatingPoint(fmt) => match fmt {
-            InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleSer::<f32>::new()),
-            InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleSer::<f64>::new()),
+            InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleSer::<F32>::new()),
+            InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleSer::<F64>::new()),
             _ => {
                 let fmt = fmt.clone();
                 Box::new(BinaryFloatingPointValueSer { fmt })
@@ -294,8 +331,8 @@ where
         CompiledSpecStructure::Name(name) => match named_unit_sers.get(name) {
             Some(ser) => Box::new(ser.clone()),
             None => {
-                let named_ser: Gc<GcCell<Box<dyn GluinoValueSer<W>>>> =
-                    Gc::new(GcCell::new(Box::new(VoidGluinoValueSer)));
+                let named_ser: Rc<RefCell<Box<dyn GluinoValueSer<W>>>> =
+                    Rc::new(RefCell::new(Box::new(VoidGluinoValueSer)));
                 named_unit_sers.insert(name.clone(), named_ser.clone());
                 let inner_ser = spec
                     .named_schema()
@@ -308,6 +345,12 @@ where
                 Box::new(named_ser)
             }
         },
+        CompiledSpecStructure::ConstSet(const_spec, const_values) => {
+            Box::new(ConstSetSer {
+                const_values: const_values.clone(),
+                const_ser: get_unit_serialization_function_internal::<W>(const_spec, named_unit_sers),
+            })
+        }
     }
 }
 
@@ -340,8 +383,8 @@ where
         },
         CompiledSpecStructure::BinaryFloatingPoint(fmt) => {
             match fmt {
-                InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleDe::<f32>::new()),
-                InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleDe::<f64>::new()),
+                InterchangeBinaryFloatingPointFormat::Single => Box::new(NativeSingleDe::<F32>::new()),
+                InterchangeBinaryFloatingPointFormat::Double => Box::new(NativeSingleDe::<F64>::new()),
                 InterchangeBinaryFloatingPointFormat::Half => todo!(),
                 InterchangeBinaryFloatingPointFormat::Quadruple => todo!(),
                 InterchangeBinaryFloatingPointFormat::Octuple => todo!(),
@@ -359,5 +402,6 @@ where
         CompiledSpecStructure::Enum { variants, variant_to_spec } => todo!(),
         CompiledSpecStructure::Union(_) => todo!(),
         CompiledSpecStructure::Name(_) => todo!(),
+        CompiledSpecStructure::ConstSet(_,_) => todo!(),
     }
 }

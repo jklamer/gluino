@@ -1,7 +1,5 @@
 use std::{collections::HashMap, io::Write, marker::PhantomData};
 
-use gc::{Finalize, Trace};
-
 use crate::{
     spec::{
         combine, InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size,
@@ -30,6 +28,7 @@ impl SerSizeValidator for Size {
         }
     }
 
+    #[inline]
     fn need_write_size(&self) -> bool {
         match self {
             Self::Variable | Self::Range(_) | Self::LessThan(_) | Self::GreaterThan(_) => true,
@@ -38,7 +37,7 @@ impl SerSizeValidator for Size {
     }
 }
 
-#[derive(Trace, Finalize)]
+
 pub(crate) struct VoidGluinoValueSer;
 
 impl<W> GluinoValueSer<W> for VoidGluinoValueSer
@@ -58,7 +57,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct BoolGluinoValueSer;
 
 impl<W> GluinoValueSer<W> for BoolGluinoValueSer
@@ -86,7 +84,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct NativeSingleSer<E: Encodable> {
     _d: PhantomData<E>,
 }
@@ -111,7 +108,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct BigIntValueSer {
     pub(crate) n: u8,
 }
@@ -144,7 +140,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct BigUintValueSer {
     pub(crate) n: u8,
 }
@@ -178,7 +173,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct BinaryFloatingPointValueSer {
     pub(crate) fmt: InterchangeBinaryFloatingPointFormat,
 }
@@ -218,7 +212,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct DecimalFloatingPointValueSer {
     pub(crate) fmt: InterchangeDecimalFloatingPointFormat,
 }
@@ -253,7 +246,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct DecimalSer;
 
 impl<W> GluinoValueSer<W> for DecimalSer
@@ -278,9 +270,7 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct ByteValueSer {
-    #[unsafe_ignore_trace]
     pub(crate) spec_size: Size,
 }
 
@@ -318,9 +308,7 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct Utf8Ser {
-    #[unsafe_ignore_trace]
     pub(crate) spec_size: Size,
 }
 
@@ -360,9 +348,7 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct NonUtf8Ser {
-    #[unsafe_ignore_trace]
     pub(crate) spec_size: Size,
 }
 
@@ -401,9 +387,7 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct MapSer<W> {
-    #[unsafe_ignore_trace]
     pub(crate) spec_size: Size,
     pub(crate) key_ser: Box<dyn GluinoValueSer<W>>,
     pub(crate) value_ser: Box<dyn GluinoValueSer<W>>,
@@ -452,9 +436,7 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct ListSer<W> {
-    #[unsafe_ignore_trace]
     pub(crate) spec_size: Size,
     pub(crate) value_ser: Box<dyn GluinoValueSer<W>>,
 }
@@ -496,7 +478,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct OptionalValueSer<W> {
     pub(crate) inner_ser: Box<dyn GluinoValueSer<W>>,
 }
@@ -530,7 +511,6 @@ where
     }
 }
 
-#[derive(Trace, Finalize)]
 pub(crate) struct ProductValueSer<W> {
     pub(crate) field_sers: Vec<Box<dyn GluinoValueSer<W>>>,
 }
@@ -591,6 +571,31 @@ where
             }
         } else {
             Err(GluinoSerializationError::SumKindValueKindMismatch {
+                actual_value_kind: value.into(),
+            })
+        }
+    }
+}
+
+pub(crate) struct ConstSetSer<W> {
+    pub(crate) const_values: Vec<GluinoValue>,
+    pub(crate) const_ser: Box<dyn GluinoValueSer<W>>,
+}
+
+impl<W> GluinoValueSer<W> for ConstSetSer<W>
+where
+        for<'a> W: Write + 'a,
+{
+    fn serialize(
+        &self,
+        value: GluinoValue,
+        writer: &mut W,
+    ) -> Result<usize, GluinoSerializationError> {
+        if let GluinoValue::ConstSet(idx) = value {
+            self.type_ser.serialize(self.const_values.get(idx as usize).ok_or(GluinoSerializationError::UnknownConstSetIndex(idx))?.clone(), writer)
+        } else {
+            Err(GluinoSerializationError::ValueKindMismatch {
+                expected_value_kind: GluinoValueKind::ConstSet,
                 actual_value_kind: value.into(),
             })
         }

@@ -6,7 +6,6 @@ use crate::{
     },
 };
 use core::fmt::Debug;
-use gc::{Finalize, Gc, GcCell, Trace};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
@@ -14,53 +13,10 @@ use std::{
 use strum::{EnumDiscriminants, EnumIter};
 use crate::serde::GluinoValue;
 
-#[derive(Clone, Trace, Finalize)]
-pub enum CompiledSpecRef {
-    Compiled(Gc<CompiledSpec>),
-    Resolving(Gc<GcCell<CompiledSpec>>),
-}
-
-impl CompiledSpecRef {
-    pub fn of(spec: CompiledSpec) -> CompiledSpecRef {
-        CompiledSpecRef::Compiled(Gc::new(spec))
-    }
-
-    #[inline]
-    pub fn use_ref<T>(&self, f: impl FnOnce(&CompiledSpec) -> T) -> T {
-        match self {
-            CompiledSpecRef::Compiled(spec) => f(spec),
-            CompiledSpecRef::Resolving(spec_cell) => f(&spec_cell.borrow()),
-        }
-    }
-
-    pub(crate) fn replace_ref(&self, spec: CompiledSpec) {
-        if let Self::Resolving(cell) = self {
-            *cell.borrow_mut() = spec;
-        } else {
-            panic!("Tried to replace ref for non resolving schema")
-        }
-    }
-}
-
-impl PartialEq for CompiledSpecRef {
-    fn eq(&self, other: &Self) -> bool {
-        self.use_ref(|spec| other.use_ref(|other_spec| spec == other_spec))
-    }
-}
-
-impl Eq for CompiledSpecRef {}
-
-impl Debug for CompiledSpecRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.use_ref(|spec| spec.to_spec().fmt(f))
-    }
-}
-
-#[derive(Eq, PartialEq, Clone, Trace, Finalize)]
+#[derive(Eq, PartialEq, Clone)]
 pub struct CompiledSpec {
-    #[unsafe_ignore_trace]
     fingerprint: SpecFingerprint,
-    named_schema: HashMap<String, CompiledSpecRef>,
+    named_spec: HashMap<String, CompiledSpec>,
     structure: CompiledSpecStructure,
 }
 
@@ -68,7 +24,7 @@ impl Debug for CompiledSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompiledSpec")
             .field("fingerprint", &self.fingerprint)
-            .field("named_schema", &self.named_schema)
+            .field("named_schema", &self.named_spec)
             .field("structure", &self.to_spec())
             .finish()
     }
@@ -84,7 +40,7 @@ impl CompiledSpec {
     }
 
     pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, CompiledSpecRef> {
-        &self.named_schema
+        &self.named_spec
     }
 
     pub fn compile(spec: Spec) -> Result<CompiledSpec, SpecCompileError> {
@@ -93,7 +49,7 @@ impl CompiledSpec {
 
     pub fn compile_in_context(
         spec: Spec,
-        context: &mut HashMap<String, CompiledSpecRef>,
+        context: &mut HashMap<String, CompiledSpec>,
     ) -> Result<CompiledSpec, SpecCompileError> {
         compile_spec_internal(spec, context, &mut HashSet::new(), &mut HashSet::new())
     }
@@ -102,25 +58,25 @@ impl CompiledSpec {
     fn invalid_compiled_spec() -> CompiledSpec {
         CompiledSpec {
             fingerprint: SpecFingerprint::new(&HashMap::new(), &CompiledSpecStructure::Void),
-            named_schema: HashMap::with_capacity(0),
+            named_spec: HashMap::with_capacity(0),
             structure: CompiledSpecStructure::Void,
         }
     }
 
     pub(crate) fn to_spec(&self) -> Spec {
-        Self::make_spec(&self.named_schema, &self.structure)
+        Self::make_spec(&self.named_spec, &self.structure)
     }
 
     //turn the structe of a compiled schema in the provided context into a context free spec
     pub(crate) fn make_spec(
-        context: &HashMap<String, CompiledSpecRef>,
+        context: &HashMap<String, CompiledSpec>,
         structure: &CompiledSpecStructure,
     ) -> Spec {
         Self::make_spec_internal(context, &mut HashSet::new(), structure)
     }
 
     fn make_spec_internal(
-        context: &HashMap<String, CompiledSpecRef>,
+        context: &HashMap<String, CompiledSpec>,
         names_converted: &mut HashSet<String>,
         structure: &CompiledSpecStructure,
     ) -> Spec {
@@ -237,7 +193,7 @@ impl CompiledSpec {
     }
 }
 
-#[derive(PartialEq, Clone, EnumDiscriminants, Trace, Finalize)]
+#[derive(Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(derive(EnumIter))]
 pub enum CompiledSpecStructure {
     Void,
@@ -248,18 +204,16 @@ pub enum CompiledSpecStructure {
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat),
     Decimal(DecimalFmt),
     Map {
-        #[unsafe_ignore_trace]
         size: Size,
         key_spec: Box<CompiledSpec>,
         value_spec: Box<CompiledSpec>,
     },
     List {
-        #[unsafe_ignore_trace]
         size: Size,
         value_spec: Box<CompiledSpec>,
     },
-    String(#[unsafe_ignore_trace] Size, StringEncodingFmt),
-    Bytes(#[unsafe_ignore_trace] Size),
+    String(Size, StringEncodingFmt),
+    Bytes(Size),
     Optional(Box<CompiledSpec>),
     Name(String),
     Record {
@@ -297,28 +251,28 @@ impl From<IllegalDecimalFmt> for SpecCompileError {
 
 pub(crate) fn compile_spec_internal(
     spec: Spec,
-    context: &mut HashMap<String, CompiledSpecRef>,
+    context: &mut HashMap<String, CompiledSpec>,
     non_optional_names: &mut HashSet<String>,
     names_used: &mut HashSet<String>,
 ) -> Result<CompiledSpec, SpecCompileError> {
     let mut internal_names_used = HashSet::new();
     let structure =
         compile_structure_internal(spec, context, non_optional_names, &mut internal_names_used)?;
-    let mut named_schema = HashMap::new();
+    let mut named_spec = HashMap::new();
     for name in internal_names_used.iter() {
-        named_schema.insert(name.clone(), context.get(name).unwrap().clone());
+        named_spec.insert(name.clone(), context.get(name).unwrap().clone());
     }
     names_used.extend(internal_names_used.into_iter());
     Ok(CompiledSpec {
-        fingerprint: SpecFingerprint::new(&named_schema, &structure),
-        named_schema,
+        fingerprint: SpecFingerprint::new(&named_spec, &structure),
+        named_spec,
         structure,
     })
 }
 
 pub(crate) fn compile_structure_internal(
     spec: Spec,
-    context: &mut HashMap<String, CompiledSpecRef>,
+    context: &mut HashMap<String, CompiledSpec>,
     non_optional_names: &mut HashSet<String>,
     names_used: &mut HashSet<String>,
 ) -> Result<CompiledSpecStructure, SpecCompileError> {
@@ -558,7 +512,7 @@ where
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Trace, Finalize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct DecimalFmt {
     pub precision: u64,
     pub scale: u64,

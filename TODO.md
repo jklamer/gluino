@@ -1,5 +1,5 @@
 # TODO
-- [ ] Wire through const set
+- [X] Wire through const set
 - [ ] Serde implementation for Open Ended Ranges
 - [ ] Change to builder implementation for Spec -> Compiled
 - [ ] Remove need for graph library by using unsafe code as needed

@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 
 use crate::util::WriteAllReturnSize;
 
-use super::{GluinoSerializationError, GluinoValue, GluinoValueKind};
+use super::{F32, F64, GluinoSerializationError, GluinoValue, GluinoValueKind};
 
 pub trait Encodable
 where
@@ -94,33 +94,29 @@ impl Encodable for bool {
     default_extract!(Bool);
 }
 
-impl Encodable for f32 {
-    #[inline]
+impl Encodable for F32 {
     fn encode<W: Write>(&self, writer: &mut W) -> Result<usize, io::Error> {
-        writer.write_all_size(&self.to_le_bytes())
+        writer.write_all_size(&self.0.to_le_bytes())
     }
 
-    #[inline]
     fn decode<R: Read>(reader: &mut R) -> Result<GluinoValue, io::Error> {
         let mut buff = [0u8; 4];
         reader.read_exact(&mut buff)?;
-        Ok(GluinoValue::Float(f32::from_le_bytes(buff)))
+        Ok(GluinoValue::Float(F32(f32::from_le_bytes(buff))))
     }
 
     default_extract!(Float);
 }
 
-impl Encodable for f64 {
-    #[inline]
+impl Encodable for F64 {
     fn encode<W: Write>(&self, writer: &mut W) -> Result<usize, io::Error> {
-        writer.write_all_size(&self.to_le_bytes())
+        writer.write_all_size(&self.0.to_le_bytes())
     }
 
-    #[inline]
     fn decode<R: Read>(reader: &mut R) -> Result<GluinoValue, io::Error> {
         let mut buff = [0u8; 8];
         reader.read_exact(&mut buff)?;
-        Ok(GluinoValue::Double(f64::from_le_bytes(buff)))
+        Ok(GluinoValue::Double(F64(f64::from_le_bytes(buff))))
     }
 
     default_extract!(Double);

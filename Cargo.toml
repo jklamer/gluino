@@ -14,4 +14,3 @@ strum = {version = "0.25.0", features = ["derive"] }
 strum_macros = {version = "0.25.3" }
 hex = "0.4.3"
 sha2 = "0.10.6"
-gc = {version= "0.5.0", features = ["derive"]}

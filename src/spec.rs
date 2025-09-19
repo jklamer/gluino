@@ -1,5 +1,4 @@
 use core::slice;
-use gc::{Finalize, Trace};
 use std::{
     io::Read,
     io::{self, Write},
@@ -421,7 +420,7 @@ impl Spec {
                         .fold(Ok(0usize), combine)?
             }
             Spec::Void => out.write_all_size(&[VOID])?,
-            Spec::ConstSet(_, _) => {}
+            Spec::ConstSet(_, _) => { }
         })
     }
 }
@@ -546,7 +545,7 @@ impl Size {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter, Trace, Finalize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
 pub enum InterchangeBinaryFloatingPointFormat {
     Half,
     Single,
@@ -602,7 +601,7 @@ impl InterchangeBinaryFloatingPointFormat {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter, Trace, Finalize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
 pub enum InterchangeDecimalFloatingPointFormat {
     Dec32,
     Dec64,
@@ -656,7 +655,7 @@ impl InterchangeDecimalFloatingPointFormat {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter, Trace, Finalize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter)]
 pub enum StringEncodingFmt {
     #[default]
     Utf8, //use this one, please
