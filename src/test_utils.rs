@@ -2,12 +2,12 @@ use std::iter;
 
 use strum::IntoEnumIterator;
 
-use crate::spec::{
-    InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, Spec,
+use crate::spec_parsing::{
+    InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, ParsedSpec,
     SpecKind, StringEncodingFmt,
 };
 
-pub(crate) fn get_all_kinds_spec() -> Vec<Spec> {
+pub(crate) fn get_all_kinds_spec() -> Vec<ParsedSpec> {
     let mut specs = Vec::with_capacity(256);
     for spec_kind in SpecKind::iter() {
         for spec in get_valid_specs_for_kind(spec_kind) {
@@ -18,33 +18,33 @@ pub(crate) fn get_all_kinds_spec() -> Vec<Spec> {
     specs
 }
 
-pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<Item = Spec>> {
+pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<Item =ParsedSpec>> {
     match spec_kind {
-        SpecKind::Bool => Box::new(iter::once(Spec::Bool)),
-        SpecKind::Uint => Box::new((0..=u8::MAX).map(|n| Spec::Uint(n))),
-        SpecKind::Int => Box::new((0..=u8::MAX).map(|n| Spec::Int(n))),
+        SpecKind::Bool => Box::new(iter::once(ParsedSpec::Bool)),
+        SpecKind::Uint => Box::new((0..=u8::MAX).map(|n| ParsedSpec::Uint(n))),
+        SpecKind::Int => Box::new((0..=u8::MAX).map(|n| ParsedSpec::Int(n))),
         SpecKind::BinaryFloatingPoint => Box::new(
-            InterchangeBinaryFloatingPointFormat::iter().map(|bfp| Spec::BinaryFloatingPoint(bfp)),
+            InterchangeBinaryFloatingPointFormat::iter().map(|bfp| ParsedSpec::BinaryFloatingPoint(bfp)),
         ),
         SpecKind::DecimalFloatingPoint => Box::new(
             InterchangeDecimalFloatingPointFormat::iter()
-                .map(|dfp| Spec::DecimalFloatingPoint(dfp)),
+                .map(|dfp| ParsedSpec::DecimalFloatingPoint(dfp)),
         ),
         SpecKind::Decimal => Box::new(
             vec![
-                Spec::Decimal {
+                ParsedSpec::Decimal {
                     precision: 22,
                     scale: 2,
                 },
-                Spec::Decimal {
+                ParsedSpec::Decimal {
                     precision: 10,
                     scale: 2,
                 },
-                Spec::Decimal {
+                ParsedSpec::Decimal {
                     precision: 77,
                     scale: 10,
                 },
-                Spec::Decimal {
+                ParsedSpec::Decimal {
                     precision: 40,
                     scale: 10,
                 },
@@ -53,31 +53,31 @@ pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<
         ),
         SpecKind::Map => Box::new(
             vec![
-                Spec::Map {
+                ParsedSpec::Map {
                     size: Size::Variable,
-                    key_spec: Spec::Bool.into(),
-                    value_spec: Spec::Int(4).into(),
+                    key_spec: ParsedSpec::Bool.into(),
+                    value_spec: ParsedSpec::Int(4).into(),
                 },
-                Spec::Map {
+                ParsedSpec::Map {
                     size: Size::Fixed(50),
-                    key_spec: Spec::Int(4).into(),
-                    value_spec: Spec::Int(4).into(),
+                    key_spec: ParsedSpec::Int(4).into(),
+                    value_spec: ParsedSpec::Int(4).into(),
                 },
             ]
             .into_iter(),
         ),
         SpecKind::List => Box::new(
             vec![
-                Spec::List {
+                ParsedSpec::List {
                     size: Size::Variable,
-                    value_spec: Spec::BinaryFloatingPoint(
+                    value_spec: ParsedSpec::BinaryFloatingPoint(
                         InterchangeBinaryFloatingPointFormat::Double,
                     )
                     .into(),
                 },
-                Spec::List {
+                ParsedSpec::List {
                     size: Size::Fixed(32),
-                    value_spec: Spec::Decimal {
+                    value_spec: ParsedSpec::Decimal {
                         precision: 10,
                         scale: 2,
                     }
@@ -87,24 +87,24 @@ pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<
             .into_iter(),
         ),
         SpecKind::String => Box::new(
-            iter::once(Spec::String(Size::Variable, StringEncodingFmt::Utf8))
-                .chain(StringEncodingFmt::iter().map(|fmt| Spec::String(Size::Fixed(45), fmt)))
-                .chain(StringEncodingFmt::iter().map(|fmt| Spec::String(Size::Variable, fmt))),
+            iter::once(ParsedSpec::String(Size::Variable, StringEncodingFmt::Utf8))
+                .chain(StringEncodingFmt::iter().map(|fmt| ParsedSpec::String(Size::Fixed(45), fmt)))
+                .chain(StringEncodingFmt::iter().map(|fmt| ParsedSpec::String(Size::Variable, fmt))),
         ),
         SpecKind::Bytes => Box::new(
-            iter::once(Spec::Bytes(Size::Variable))
-                .chain(iter::once(Spec::Bytes(Size::Fixed(1024)))),
+            iter::once(ParsedSpec::Bytes(Size::Variable))
+                .chain(iter::once(ParsedSpec::Bytes(Size::Fixed(1024)))),
         ),
         SpecKind::Optional => Box::new(
-            iter::once(Spec::Optional(Spec::Bytes(Size::Variable).into()))
-                .chain(iter::once(Spec::Optional(Spec::Int(6).into()))),
+            iter::once(ParsedSpec::Optional(ParsedSpec::Bytes(Size::Variable).into()))
+                .chain(iter::once(ParsedSpec::Optional(ParsedSpec::Int(6).into()))),
         ),
         SpecKind::Name => Box::new(
-            iter::once(Spec::Name {
+            iter::once(ParsedSpec::Name {
                 name: "test".into(),
-                spec: Spec::List {
+                spec: ParsedSpec::List {
                     size: Size::Fixed(32),
-                    value_spec: Spec::Decimal {
+                    value_spec: ParsedSpec::Decimal {
                         precision: 10,
                         scale: 2,
                     }
@@ -112,34 +112,35 @@ pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<
                 }
                 .into(),
             })
-            .chain(iter::once(Spec::Name {
+            .chain(iter::once(ParsedSpec::Name {
                 name: "test".into(),
-                spec: Spec::Bytes(Size::Variable).into(),
+                spec: ParsedSpec::Bytes(Size::Variable).into(),
             })),
         ),
-        SpecKind::Ref => Box::new(iter::once(Spec::Name {
+        SpecKind::Ref => Box::new(iter::once(ParsedSpec::Name {
             name: "test".into(),
-            spec: Box::new(Spec::Record(vec![
-                ("field1".into(), Spec::Bool),
-                ("field2".into(), Spec::Int(4)),
+            spec: Box::new(ParsedSpec::Record(vec![
+                ("field1".into(), ParsedSpec::Bool),
+                ("field2".into(), ParsedSpec::Int(4)),
                 (
                     "field3".into(),
-                    Spec::Optional(Box::new(Spec::Ref {
+                    ParsedSpec::Optional(Box::new(ParsedSpec::Ref {
                         name: "test".into(),
                     })),
                 ),
             ])),
         })),
-        SpecKind::Record => Box::new(iter::once(Spec::Record(vec![
-            ("field1".into(), Spec::Bool),
-            ("field2".into(), Spec::Int(4)),
+        SpecKind::Record => Box::new(iter::once(ParsedSpec::Record(vec![
+            ("field1".into(), ParsedSpec::Bool),
+            ("field2".into(), ParsedSpec::Int(4)),
         ]))),
-        SpecKind::Tuple => Box::new(iter::once(Spec::Tuple(vec![Spec::Bool, Spec::Int(4)]))),
-        SpecKind::Enum => Box::new(iter::once(Spec::Enum(vec![
-            ("field1".into(), Spec::Bool),
-            ("field2".into(), Spec::Int(4)),
+        SpecKind::Tuple => Box::new(iter::once(ParsedSpec::Tuple(vec![ParsedSpec::Bool, ParsedSpec::Int(4)]))),
+        SpecKind::Enum => Box::new(iter::once(ParsedSpec::Enum(vec![
+            ("field1".into(), ParsedSpec::Bool),
+            ("field2".into(), ParsedSpec::Int(4)),
         ]))),
-        SpecKind::Union => Box::new(iter::once(Spec::Union(vec![Spec::Bool, Spec::Int(4)]))),
-        SpecKind::Void => Box::new(iter::once(Spec::Void)),
+        SpecKind::Union => Box::new(iter::once(ParsedSpec::Union(vec![ParsedSpec::Bool, ParsedSpec::Int(4)]))),
+        SpecKind::Void => Box::new(iter::once(ParsedSpec::Void)),
+        SpecKind::ConstSet => Box::new(iter::once(ParsedSpec::ConstSet(Box::new(ParsedSpec::Int(2)), Vec::new(Vec::)))),
     }
 }

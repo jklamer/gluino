@@ -1,31 +1,208 @@
-use core::slice;
-use std::{
-    io::Read,
-    io::{self, Write},
-};
-use strum_macros::{EnumDiscriminants, EnumIter};
-
 use crate::{
-    compiled_spec::{CompiledSpec, SpecCompileError},
-    util::{
-        self, variable_length_decode_u64, variable_length_encode_u64, VariableLengthDecodingError,
-        WriteAllReturnSize,
+    fingerprint::SpecFingerprint,
+    spec_parsing::{
+        InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, ParsedSpec,
+        StringEncodingFmt,
     },
 };
+use core::fmt::Debug;
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
+use strum::{EnumDiscriminants, EnumIter};
+use crate::serde::GluinoValue;
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumDiscriminants)]
-#[strum_discriminants(name(SpecKind))]
+#[derive(Eq, PartialEq, Clone)]
+pub struct Spec {
+    pub(crate) fingerprint: SpecFingerprint,
+    pub(crate) named_spec: HashMap<String, Spec>,
+    pub(crate) spec_type: SpecType,
+}
+
+impl Debug for Spec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledSpec")
+            .field("fingerprint", &self.fingerprint)
+            .field("named_schema", &self.named_spec)
+            .field("structure", &self.to_parsed_spec())
+            .finish()
+    }
+}
+
+impl Spec {
+    pub fn fingerprint<'a>(&'a self) -> &'a SpecFingerprint {
+        &self.fingerprint
+    }
+
+    pub fn spec_type<'a>(&'a self) -> &'a SpecType {
+        &self.spec_type
+    }
+
+    pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, Spec> {
+        &self.named_spec
+    }
+
+    pub fn compile(spec: ParsedSpec) -> Result<Spec, SpecCompileError> {
+        Self::compile_in_context(spec, &mut HashMap::new())
+    }
+
+    pub fn compile_in_context(
+        parsed_spec: ParsedSpec,
+        context: &mut HashMap<String, Spec>,
+    ) -> Result<Spec, SpecCompileError> {
+        compile_spec_internal(parsed_spec, context, &mut HashSet::new(), &mut HashSet::new())
+    }
+
+    //internal placeholder compiled spec used for name resolution workflows
+    fn invalid_compiled_spec() -> Spec {
+        Spec {
+            fingerprint: SpecFingerprint::new(&HashMap::new(), &SpecType::Void),
+            named_spec: HashMap::with_capacity(0),
+            spec_type: SpecType::Void,
+        }
+    }
+
+    pub(crate) fn to_parsed_spec(&self) -> ParsedSpec {
+        Self::make_parsed_spec(&self.named_spec, &self.spec_type)
+    }
+
+    //turn the structe of a compiled schema in the provided context into a context free spec
+    pub(crate) fn make_parsed_spec(
+        context: &HashMap<String, Spec>,
+        structure: &SpecType,
+    ) -> ParsedSpec {
+        Self::make_parsed_spec_internal(context, &mut HashSet::new(), structure)
+    }
+
+    fn make_parsed_spec_internal(
+        context: &HashMap<String, Spec>,
+        names_converted: &mut HashSet<String>,
+        spec_type: &SpecType,
+    ) -> ParsedSpec {
+        match spec_type {
+            SpecType::Void => ParsedSpec::Void,
+            SpecType::Bool => ParsedSpec::Bool,
+            SpecType::Uint(n) => ParsedSpec::Uint(*n),
+            SpecType::Int(n) => ParsedSpec::Int(*n),
+            SpecType::BinaryFloatingPoint(fmt) => {
+                ParsedSpec::BinaryFloatingPoint(fmt.clone())
+            }
+            SpecType::DecimalFloatingPoint(fmt) => {
+                ParsedSpec::DecimalFloatingPoint(fmt.clone())
+            }
+            SpecType::Decimal(DecimalFmt { precision, scale }) => ParsedSpec::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            SpecType::Map {
+                size,
+                key_spec,
+                value_spec,
+            } => ParsedSpec::Map {
+                size: size.clone(),
+                key_spec: Box::new(Self::make_parsed_spec_internal(
+                    context,
+                    names_converted,
+                    &key_spec.spec_type,
+                )),
+                value_spec: Box::new(Self::make_parsed_spec_internal(
+                    context,
+                    names_converted,
+                    &value_spec.spec_type,
+                )),
+            },
+            SpecType::List { size, value_spec } => ParsedSpec::List {
+                size: size.clone(),
+                value_spec: Box::new(Self::make_parsed_spec_internal(
+                    context,
+                    names_converted,
+                    &value_spec.spec_type,
+                )),
+            },
+            SpecType::String(size, fmt) => ParsedSpec::String(size.clone(), fmt.clone()),
+            SpecType::Bytes(size) => ParsedSpec::Bytes(size.clone()),
+            SpecType::Optional(s) => ParsedSpec::Optional(Box::new(
+                Self::make_parsed_spec_internal(context, names_converted, &s.spec_type),
+            )),
+            SpecType::Name(name) => {
+                if names_converted.contains(name) {
+                    ParsedSpec::Ref { name: name.clone() }
+                } else {
+                    names_converted.insert(name.clone());
+                    ParsedSpec::Name {
+                        name: name.clone(),
+                        spec: Box::new(Self::make_parsed_spec_internal(
+                            context,
+                            names_converted,
+                            &context.get(name).unwrap().spec_type,
+                        )),
+                    }
+                }
+            }
+            SpecType::Record {
+                fields,
+                field_to_spec,
+                ..
+            } => ParsedSpec::Record(
+                fields
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.clone(),
+                            Self::make_parsed_spec_internal(
+                                context,
+                                names_converted,
+                                &field_to_spec.get(f).unwrap().spec_type,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            SpecType::Tuple(compiled_specs) => ParsedSpec::Tuple(
+                compiled_specs
+                    .iter()
+                    .map(|cs| Self::make_parsed_spec_internal(context, names_converted, &cs.spec_type))
+                    .collect(),
+            ),
+            SpecType::Enum {
+                variants,
+                variant_to_spec,
+            } => ParsedSpec::Enum(
+                variants
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.clone(),
+                            Self::make_parsed_spec_internal(
+                                context,
+                                names_converted,
+                                &variant_to_spec.get(f).unwrap().spec_type,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            SpecType::Union(compiled_specs) => ParsedSpec::Union(
+                compiled_specs
+                    .iter()
+                    .map(|cs| Self::make_parsed_spec_internal(context, names_converted, &cs.spec_type))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(derive(EnumIter))]
-pub enum Spec {
+pub enum SpecType {
+    Void,
     Bool,
     Uint(u8),
     Int(u8),
     BinaryFloatingPoint(InterchangeBinaryFloatingPointFormat),
     DecimalFloatingPoint(InterchangeDecimalFloatingPointFormat),
-    Decimal {
-        precision: u64,
-        scale: u64,
-    },
+    Decimal(DecimalFmt),
     Map {
         size: Size,
         key_spec: Box<Spec>,
@@ -38,793 +215,513 @@ pub enum Spec {
     String(Size, StringEncodingFmt),
     Bytes(Size),
     Optional(Box<Spec>),
-    Name {
-        name: String,
-        spec: Box<Spec>,
+    Name(String),
+    Record {
+        fields: Vec<String>,
+        field_to_spec: HashMap<String, Spec>,
+        field_to_index: HashMap<String, usize>,
     },
-    Ref {
-        name: String,
-    },
-    Record(Vec<(String, Spec)>),
     Tuple(Vec<Spec>),
-    Enum(Vec<(String, Spec)>),
+    Enum {
+        variants: Vec<String>,
+        variant_to_spec: HashMap<String, Spec>,
+    },
     Union(Vec<Spec>),
-    ConstSet(Box<Spec>, Vec<Vec<u8>>),
-    Void,
+    ConstSet(Box<Spec>, Vec<GluinoValue>),
 }
 
-//core
-const BOOL: u8 = 32;
-const UINT: u8 = 33;
-const NAME: u8 = 34;
-const INT: u8 = 35;
-const BINARY_FP: u8 = 36;
-const DECIMAL_FP: u8 = 37;
-const REF: u8 = 38;
-const VOID: u8 = 39;
-const LIST: u8 = 40;
-const MAP: u8 = 41;
-const RECORD: u8 = 42;
-const ENUM: u8 = 43;
-const UNION: u8 = 45;
-const DECIMAL: u8 = 46;
-const TUPLE: u8 = 47;
-const BYTES: u8 = 48;
-const STRING: u8 = 49;
-const OPTIONAL: u8 = 63;
-
-// aliases
-const UINT_0: u8 = 0;
-const UINT_1: u8 = 1;
-const UINT_2: u8 = 2;
-const UINT_3: u8 = 3;
-const INT_0: u8 = 4;
-const INT_1: u8 = 5;
-const INT_2: u8 = 6;
-const INT_3: u8 = 7;
-const SINGLE_FP: u8 = 8;
-const DOUBLE_FP: u8 = 9;
-const UTF8_STRING: u8 = 10;
-
-// never used  ( except for testing)
-const NEVER_USED: u8 = 0xFF;
-
-impl Spec {
-    pub fn compile(self) -> Result<CompiledSpec, SpecCompileError> {
-        CompiledSpec::compile(self)
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(256);
-        if let Err(e) = self.to_bytes_internal(&mut out) {
-            panic!("{}", e.to_string())
-        };
-        out
-    }
-
-    pub(crate) fn to_longform_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(256);
-        if let Err(e) = self.to_longform_bytes_internal(&mut out) {
-            panic!("{}", e.to_string())
-        };
-        out
-    }
-
-    pub fn write_as_bytes<W: Write>(&self, w: &mut W) -> Result<usize, io::Error> {
-        self.to_bytes_internal(w)
-    }
-
-    fn to_bytes_internal<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        Ok(match self {
-            Spec::Bool => out.write_all_size(&[BOOL])?,
-            Spec::Uint(scale) => match scale {
-                0 => out.write_all_size(&[UINT_0])?,
-                1 => out.write_all_size(&[UINT_1])?,
-                2 => out.write_all_size(&[UINT_2])?,
-                3 => out.write_all_size(&[UINT_3])?,
-                s => out.write_all_size(&[UINT, *s])?,
-            },
-            Spec::Int(scale) => match scale {
-                0 => out.write_all_size(&[INT_0])?,
-                1 => out.write_all_size(&[INT_1])?,
-                2 => out.write_all_size(&[INT_2])?,
-                3 => out.write_all_size(&[INT_3])?,
-                s => out.write_all_size(&[INT, *s])?,
-            },
-            Spec::BinaryFloatingPoint(fmt) => match fmt {
-                InterchangeBinaryFloatingPointFormat::Single => out.write_all_size(&[SINGLE_FP])?,
-                InterchangeBinaryFloatingPointFormat::Double => out.write_all_size(&[DOUBLE_FP])?,
-                fmt => out.write_all_size(&[BINARY_FP])? + fmt.encode(out)?,
-            },
-            Spec::DecimalFloatingPoint(fmt) => {
-                out.write_all_size(&[DECIMAL_FP])? + fmt.encode(out)?
-            }
-            Spec::Decimal { precision, scale } => {
-                out.write_all_size(&[DECIMAL])?
-                    + variable_length_encode_u64(*precision, out)?
-                    + variable_length_encode_u64(*scale, out)?
-            }
-            Spec::Map {
-                size,
-                key_spec,
-                value_spec,
-            } => {
-                out.write_all_size(&[MAP])?
-                    + size.encode(out)?
-                    + Spec::to_bytes_internal(key_spec, out)?
-                    + Spec::to_bytes_internal(value_spec, out)?
-            }
-            Spec::List { value_spec, size } => {
-                out.write_all_size(&[LIST])?
-                    + size.encode(out)?
-                    + Spec::to_bytes_internal(value_spec, out)?
-            }
-            Spec::String(size, str_fmt) => {
-                if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
-                    out.write_all_size(&[UTF8_STRING])?
-                } else {
-                    out.write_all_size(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
-                }
-            }
-            Spec::Bytes(size) => out.write_all_size(&[BYTES])? + size.encode(out)?,
-            Spec::Optional(optional_type) => {
-                out.write_all_size(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
-            }
-            Spec::Name { name, spec } => {
-                out.write_all_size(&[NAME])?
-                    + encode_string_utf8(name, out)?
-                    + Spec::to_bytes_internal(spec, out)?
-            }
-            Spec::Ref { name } => out.write_all_size(&[REF])? + encode_string_utf8(name, out)?,
-            Spec::Record(fields) => {
-                out.write_all_size(&[RECORD])?
-                    + variable_length_encode_u64(fields.len() as u64, out)?
-                    + fields
-                        .iter()
-                        .map(|(name, spec)| {
-                            combine(
-                                encode_string_utf8(name, out),
-                                Spec::to_bytes_internal(&spec, out),
-                            )
-                        })
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Tuple(fields) => {
-                out.write_all_size(&[TUPLE])?
-                    + variable_length_encode_u64(fields.len() as u64, out)?
-                    + fields
-                        .iter()
-                        .map(|spec| Spec::to_bytes_internal(&spec, out))
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Enum(variants) => {
-                out.write_all_size(&[ENUM])?
-                    + variable_length_encode_u64(variants.len() as u64, out)?
-                    + variants
-                        .iter()
-                        .map(|(name, spec)| {
-                            combine(
-                                encode_string_utf8(name, out),
-                                Spec::to_bytes_internal(spec, out),
-                            )
-                        })
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Union(variants) => {
-                out.write_all_size(&[UNION])?
-                    + variable_length_encode_u64(variants.len() as u64, out)?
-                    + variants
-                        .iter()
-                        .map(|spec| Spec::to_bytes_internal(spec, out))
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Void => out.write_all_size(&[VOID])?,
-        })
-    }
-
-    pub fn read_from_bytes<R: Read>(input: &mut R) -> Result<Spec, SpecParsingError> {
-        match next_byte(input)? {
-            BOOL => Ok(Spec::Bool),
-            VOID => Ok(Spec::Void),
-            UINT => Ok(Spec::Uint(next_byte(input)?)),
-            INT => Ok(Spec::Int(next_byte(input)?)),
-            NAME => {
-                let name = decode_utf8_string(input)?;
-                let spec = Spec::read_from_bytes(input)?.into();
-                Ok(Spec::Name { name, spec })
-            }
-            REF => Ok(Spec::Ref {
-                name: decode_utf8_string(input)?,
-            }),
-            BINARY_FP => Ok(Spec::BinaryFloatingPoint(
-                InterchangeBinaryFloatingPointFormat::decode(input)?,
-            )),
-            DECIMAL_FP => Ok(Spec::DecimalFloatingPoint(
-                InterchangeDecimalFloatingPointFormat::decode(input)?,
-            )),
-            LIST => {
-                let size = Size::decode(input)?;
-                let value_spec = Spec::read_from_bytes(input)?.into();
-                Ok(Spec::List { size, value_spec })
-            }
-            MAP => {
-                let size = Size::decode(input)?;
-                let key_spec = Spec::read_from_bytes(input)?.into();
-                let value_spec = Spec::read_from_bytes(input)?.into();
-                Ok(Spec::Map {
-                    size,
-                    key_spec,
-                    value_spec,
-                })
-            }
-            DECIMAL => {
-                let precision = decode_u64(input)?;
-                let scale = decode_u64(input)?;
-                Ok(Spec::Decimal { precision, scale })
-            }
-            BYTES => {
-                let size = Size::decode(input)?;
-                Ok(Spec::Bytes(size))
-            }
-            STRING => {
-                let size = Size::decode(input)?;
-                let str_fmt = StringEncodingFmt::decode(input)?;
-                Ok(Spec::String(size, str_fmt))
-            }
-            OPTIONAL => Ok(Spec::Optional(Spec::read_from_bytes(input)?.into())),
-            RECORD => {
-                let n = decode_u64(input)?;
-                let mut v = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    v.push((decode_utf8_string(input)?, Spec::read_from_bytes(input)?));
-                }
-                Ok(Spec::Record(v))
-            }
-            TUPLE => {
-                let n = decode_u64(input)?;
-                let mut v = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    v.push(Spec::read_from_bytes(input)?);
-                }
-                Ok(Spec::Tuple(v))
-            }
-            ENUM => {
-                let n = decode_u64(input)?;
-                let mut v = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    v.push((decode_utf8_string(input)?, Spec::read_from_bytes(input)?));
-                }
-                Ok(Spec::Enum(v))
-            }
-            UNION => {
-                let n = decode_u64(input)?;
-                let mut v = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    v.push(Spec::read_from_bytes(input)?);
-                }
-                Ok(Spec::Union(v))
-            }
-            // aliases
-            UINT_0 => Ok(Spec::Uint(0)),
-            UINT_1 => Ok(Spec::Uint(1)),
-            UINT_2 => Ok(Spec::Uint(2)),
-            UINT_3 => Ok(Spec::Uint(3)),
-            INT_0 => Ok(Spec::Int(0)),
-            INT_1 => Ok(Spec::Int(1)),
-            INT_2 => Ok(Spec::Int(2)),
-            INT_3 => Ok(Spec::Int(3)),
-            SINGLE_FP => Ok(Spec::BinaryFloatingPoint(
-                InterchangeBinaryFloatingPointFormat::Single,
-            )),
-            DOUBLE_FP => Ok(Spec::BinaryFloatingPoint(
-                InterchangeBinaryFloatingPointFormat::Double,
-            )),
-            UTF8_STRING => Ok(Spec::String(Size::Variable, StringEncodingFmt::Utf8)),
-            flag => Err(SpecParsingError::UnknownSpecFlag(flag)),
-        }
-    }
-
-    /// To longform bytes creates serialized view of spec without use of alias bytes for compression
-    /// This byte representation is used for identification purposes
-    pub(crate) fn to_longform_bytes_internal<W: Write>(
-        &self,
-        out: &mut W,
-    ) -> Result<usize, io::Error> {
-        Ok(match self {
-            Spec::Bool => out.write_all_size(&[BOOL])?,
-            Spec::Uint(scale) => out.write_all_size(&[UINT, *scale])?,
-            Spec::Int(scale) => out.write_all_size(&[INT, *scale])?,
-            Spec::BinaryFloatingPoint(fmt) => {
-                out.write_all_size(&[BINARY_FP])? + fmt.encode(out)?
-            }
-            Spec::DecimalFloatingPoint(fmt) => {
-                out.write_all_size(&[DECIMAL_FP])? + fmt.encode(out)?
-            }
-            Spec::Decimal { precision, scale } => {
-                out.write_all_size(&[DECIMAL])?
-                    + variable_length_encode_u64(*precision, out)?
-                    + variable_length_encode_u64(*scale, out)?
-            }
-            Spec::Map {
-                size,
-                key_spec,
-                value_spec,
-            } => {
-                out.write_all_size(&[MAP])?
-                    + size.encode(out)?
-                    + Spec::to_bytes_internal(key_spec, out)?
-                    + Spec::to_bytes_internal(value_spec, out)?
-            }
-            Spec::List { value_spec, size } => {
-                out.write_all_size(&[LIST])?
-                    + size.encode(out)?
-                    + Spec::to_bytes_internal(value_spec, out)?
-            }
-            Spec::String(size, str_fmt) => {
-                if matches!(size, Size::Variable) && matches!(str_fmt, StringEncodingFmt::Utf8) {
-                    out.write_all_size(&[UTF8_STRING])?
-                } else {
-                    out.write_all_size(&[STRING])? + size.encode(out)? + str_fmt.encode(out)?
-                }
-            }
-            Spec::Bytes(size) => out.write_all_size(&[BYTES])? + size.encode(out)?,
-            Spec::Optional(optional_type) => {
-                out.write_all_size(&[OPTIONAL])? + Spec::to_bytes_internal(&optional_type, out)?
-            }
-            Spec::Name { name, spec } => {
-                out.write_all_size(&[NAME])?
-                    + encode_string_utf8(name, out)?
-                    + Spec::to_bytes_internal(spec, out)?
-            }
-            Spec::Ref { name } => out.write_all_size(&[REF])? + encode_string_utf8(name, out)?,
-            Spec::Record(fields) => {
-                out.write_all_size(&[RECORD])?
-                    + variable_length_encode_u64(fields.len() as u64, out)?
-                    + fields
-                        .iter()
-                        .map(|(name, spec)| {
-                            combine(
-                                encode_string_utf8(name, out),
-                                Spec::to_bytes_internal(&spec, out),
-                            )
-                        })
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Tuple(fields) => {
-                out.write_all_size(&[TUPLE])?
-                    + variable_length_encode_u64(fields.len() as u64, out)?
-                    + fields
-                        .iter()
-                        .map(|spec| Spec::to_bytes_internal(&spec, out))
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Enum(variants) => {
-                out.write_all_size(&[ENUM])?
-                    + variable_length_encode_u64(variants.len() as u64, out)?
-                    + variants
-                        .iter()
-                        .map(|(name, spec)| {
-                            combine(
-                                encode_string_utf8(name, out),
-                                Spec::to_bytes_internal(spec, out),
-                            )
-                        })
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Union(variants) => {
-                out.write_all_size(&[UNION])?
-                    + variable_length_encode_u64(variants.len() as u64, out)?
-                    + variants
-                        .iter()
-                        .map(|spec| Spec::to_bytes_internal(spec, out))
-                        .fold(Ok(0usize), combine)?
-            }
-            Spec::Void => out.write_all_size(&[VOID])?,
-            Spec::ConstSet(_, _) => { }
-        })
-    }
-}
-
-#[inline]
-fn encode_string_utf8<W: Write>(string: &String, out: &mut W) -> Result<usize, io::Error> {
-    let b = string.as_bytes();
-    Ok(variable_length_encode_u64(b.len() as u64, out)? + out.write_all_size(b)?)
-}
-
-fn decode_utf8_string<R: Read>(input: &mut R) -> Result<String, SpecParsingError> {
-    let n = decode_u64(input)?;
-    let mut s = String::with_capacity(n as usize);
-    let n_actual = input.take(n).read_to_string(&mut s)?;
-    if (n_actual as u64) < n {
-        Err(SpecParsingError::UnexpectedEndOfBytes)
-    } else {
-        Ok(s)
-    }
-}
-
-fn decode_u64<R: Read>(input: &mut R) -> Result<u64, SpecParsingError> {
-    match variable_length_decode_u64(input)? {
-        util::VariableLengthResult::Respresentable(n) => Ok(n),
-        util::VariableLengthResult::Unrepresentable(v) => {
-            return Err(SpecParsingError::IntegerOverflowVariableLengthDecodingError(v))
-        }
-    }
-}
-
-#[inline]
-fn next_byte<R: Read>(input: &mut R) -> Result<u8, SpecParsingError> {
-    let mut flag: u8 = 255;
-    if 0usize == input.read(slice::from_mut(&mut flag))? {
-        Err(SpecParsingError::UnexpectedEndOfBytes)
-    } else {
-        Ok(flag)
-    }
-}
-
-#[derive(Debug, EnumDiscriminants)]
-#[strum_discriminants(name(SpecParsingErrorKind))]
+#[derive(Debug, Eq, PartialEq, Clone, Hash, EnumDiscriminants)]
 #[strum_discriminants(derive(EnumIter))]
-pub enum SpecParsingError {
-    ReadError(io::Error),
-    UnexpectedEndOfBytes,
-    UnknownSpecFlag(u8),
-    UnknownBinaryFormatFlag(u8),
-    UnknownDecimalFormatFlag(u8),
-    UnknownStringFormatFlag(u8),
-    UnknownSizeFormatFlag(u8),
-    IntegerOverflowVariableLengthDecodingError(Vec<u8>),
+#[strum_discriminants(name(SpecCompileErrorKind))]
+pub enum SpecCompileError {
+    DuplicateName(String),
+    UndefinedName(String),
+    DuplicateRecordFieldNames(HashSet<String>),
+    DuplicateEnumVariantNames(HashSet<String>),
+    DuplicateUnionVariantSpecs(Vec<Spec>),
+    InfinitelyRecursiveTypes(HashSet<String>),
+    IllegalDecimalFmt,
+    InternalCompilerError(String),
 }
 
-impl From<io::Error> for SpecParsingError {
-    fn from(e: io::Error) -> Self {
-        match e.kind() {
-            io::ErrorKind::UnexpectedEof => SpecParsingError::UnexpectedEndOfBytes,
-            _ => SpecParsingError::ReadError(e),
-        }
+impl From<IllegalDecimalFmt> for SpecCompileError {
+    fn from(_: IllegalDecimalFmt) -> Self {
+        SpecCompileError::IllegalDecimalFmt
     }
 }
 
-impl From<VariableLengthDecodingError> for SpecParsingError {
-    fn from(e: VariableLengthDecodingError) -> Self {
-        match e {
-            VariableLengthDecodingError::IncompleteVariableLengthEncoding => {
-                SpecParsingError::UnexpectedEndOfBytes
+pub(crate) fn compile_spec_internal(
+    spec: ParsedSpec,
+    context: &mut HashMap<String, Spec>,
+    non_optional_names: &mut HashSet<String>,
+    names_used: &mut HashSet<String>,
+) -> Result<Spec, SpecCompileError> {
+    let mut internal_names_used = HashSet::new();
+    let structure =
+        compile_structure_internal(spec, context, non_optional_names, &mut internal_names_used)?;
+    let mut named_spec = HashMap::new();
+    for name in internal_names_used.iter() {
+        named_spec.insert(name.clone(), context.get(name).unwrap().clone());
+    }
+    names_used.extend(internal_names_used.into_iter());
+    Ok(Spec {
+        fingerprint: SpecFingerprint::new(&named_spec, &structure),
+        named_spec,
+        spec_type: structure,
+    })
+}
+
+pub(crate) fn compile_structure_internal(
+    spec: ParsedSpec,
+    context: &mut HashMap<String, Spec>,
+    non_optional_names: &mut HashSet<String>,
+    names_used: &mut HashSet<String>,
+) -> Result<SpecType, SpecCompileError> {
+    match spec {
+        ParsedSpec::Bool => Ok(SpecType::Bool),
+        ParsedSpec::Uint(n) => Ok(SpecType::Uint(n)),
+        ParsedSpec::Int(n) => Ok(SpecType::Int(n)),
+        ParsedSpec::BinaryFloatingPoint(fmt) => Ok(SpecType::BinaryFloatingPoint(fmt)),
+        ParsedSpec::DecimalFloatingPoint(fmt) => Ok(SpecType::DecimalFloatingPoint(fmt)),
+        ParsedSpec::Decimal { precision, scale } => Ok(SpecType::Decimal(DecimalFmt::new(
+            precision, scale,
+        )?)),
+        ParsedSpec::Map {
+            size,
+            key_spec,
+            value_spec,
+        } => Ok(SpecType::Map {
+            size,
+            key_spec: box_compile(key_spec, context, names_used)?,
+            value_spec: box_compile(value_spec, context, names_used)?,
+        }),
+        ParsedSpec::List { size, value_spec } => Ok(SpecType::List {
+            size,
+            value_spec: box_compile(value_spec, context, names_used)?,
+        }),
+        ParsedSpec::String(size, fmt) => Ok(SpecType::String(size, fmt)),
+        ParsedSpec::Bytes(size) => Ok(SpecType::Bytes(size)),
+        ParsedSpec::Optional(s) => Ok(SpecType::Optional(box_compile(
+            s, context, names_used,
+        )?)),
+        ParsedSpec::Name { name, spec } => {
+            if context.contains_key(&name) {
+                Err(SpecCompileError::DuplicateName(name.clone()))
+            } else {
+                let compiled_spec_ref = Spec::invalid_compiled_spec();
+                context.insert(name.clone(), compiled_spec_ref.clone());
+                non_optional_names.insert(name.clone());
+                let cs = compile_spec_internal(*spec, context, non_optional_names, names_used)?;
+                context.insert(name.clone(), cs);
+                non_optional_names.remove(&name);
+                names_used.insert(name.clone());
+                Ok(SpecType::Name(name))
             }
-            VariableLengthDecodingError::IoError(e) => SpecParsingError::ReadError(e),
         }
+        ParsedSpec::Ref { name } => {
+            if non_optional_names.contains(&name) {
+                Err(SpecCompileError::InfinitelyRecursiveTypes(HashSet::from([
+                    name,
+                ])))
+            } else if context.contains_key(&name) {
+                names_used.insert(name.clone());
+                Ok(SpecType::Name(name))
+            } else {
+                Err(SpecCompileError::UndefinedName(name))
+            }
+        }
+        ParsedSpec::Record(fields) => {
+            let field_names = fields
+                .iter()
+                .map(|f| &f.0)
+                .map(|name| name.clone())
+                .collect();
+            let mut duplicate_name_track = HashSet::new();
+            let field_to_index = fields
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _))| (name.clone(), index))
+                .collect();
+            let mut field_to_spec = HashMap::with_capacity(fields.capacity());
+            for (field_name, field_spec) in fields {
+                if field_to_spec
+                    .insert(
+                        field_name.clone(),
+                        compile_spec_internal(field_spec, context, non_optional_names, names_used)?,
+                    )
+                    .is_some()
+                {
+                    duplicate_name_track.insert(field_name);
+                }
+            }
+            if duplicate_name_track.is_empty() {
+                Ok(SpecType::Record {
+                    fields: field_names,
+                    field_to_spec,
+                    field_to_index,
+                })
+            } else {
+                Err(SpecCompileError::DuplicateRecordFieldNames(
+                    duplicate_name_track,
+                ))
+            }
+        }
+        ParsedSpec::Tuple(fields) => {
+            let mut compiled_fields = Vec::with_capacity(fields.capacity());
+            for field_spec in fields {
+                compiled_fields.push(compile_spec_internal(
+                    field_spec,
+                    context,
+                    &mut non_optional_names.clone(),
+                    names_used,
+                )?)
+            }
+            Ok(SpecType::Tuple(compiled_fields))
+        }
+        ParsedSpec::Enum(variants) => {
+            let variant_names: Vec<String> =
+                variants.iter().map(|v| &v.0).map(|n| n.clone()).collect();
+            let mut all_names: HashSet<String> = variant_names.clone().into_iter().collect();
+            let duplicate_names: HashSet<String> = variant_names
+                .iter()
+                .filter(|&n| !all_names.remove(n))
+                .map(|n| n.clone())
+                .collect();
+            if !duplicate_names.is_empty() {
+                return Err(SpecCompileError::DuplicateEnumVariantNames(duplicate_names));
+            }
+            let mut variant_to_spec = HashMap::new();
+            compile_variants_with_loop_checking(
+                variants,
+                &mut variant_to_spec,
+                non_optional_names,
+                context,
+                names_used,
+            )?;
+            Ok(SpecType::Enum {
+                variants: variant_names,
+                variant_to_spec,
+            })
+        }
+        ParsedSpec::Union(variants) => {
+            let len = variants.len();
+            let variants: Vec<(usize, ParsedSpec)> = variants.into_iter().enumerate().collect();
+            let mut variants_to_spec = HashMap::new();
+            compile_variants_with_loop_checking(
+                variants,
+                &mut variants_to_spec,
+                non_optional_names,
+                context,
+                names_used,
+            )?;
+            let compiled_variants: Vec<Spec> = (0..len)
+                .map(|index| variants_to_spec.remove(&index).unwrap())
+                .collect();
+            let mut variant_fingerprints: HashSet<&SpecFingerprint> = HashSet::new();
+            let duplicate_variants: Vec<Spec> = compiled_variants
+                .iter()
+                .filter(|&v| !variant_fingerprints.insert(&v.fingerprint))
+                .map(|v| v.clone())
+                .collect();
+            if duplicate_variants.is_empty() {
+                Ok(SpecType::Union(compiled_variants))
+            } else {
+                Err(SpecCompileError::DuplicateUnionVariantSpecs(
+                    duplicate_variants,
+                ))
+            }
+        },
+        ParsedSpec::ConstSet(cont_spec, values) => {
+
+        },
+        ParsedSpec::Void => Ok(SpecType::Void),
+    }
+}
+
+impl TryFrom<ParsedSpec> for Spec {
+    type Error = SpecCompileError;
+    fn try_from(spec: ParsedSpec) -> Result<Spec, SpecCompileError> {
+        Spec::compile(spec)
+    }
+}
+
+#[inline]
+fn box_compile(
+    spec: Box<ParsedSpec>,
+    context: &mut HashMap<String, Spec>,
+    names_used: &mut HashSet<String>,
+) -> Result<Box<Spec>, SpecCompileError> {
+    Ok(Box::new(compile_spec_internal(
+        *spec,
+        context,
+        &mut HashSet::new(),
+        names_used,
+    )?))
+}
+
+#[inline]
+fn compile_variants_with_loop_checking<T>(
+    variants: Vec<(T, ParsedSpec)>,
+    variant_to_spec: &mut HashMap<T, Spec>,
+    non_optional_names: &mut HashSet<String>,
+    context: &mut HashMap<String, Spec>,
+    names_used: &mut HashSet<String>,
+) -> Result<(), SpecCompileError>
+where
+    T: Eq + PartialEq + Hash + Clone,
+{
+    let num_variants = variants.len();
+    let mut variants_with_non_optional_name_errors = HashSet::new();
+    let mut offending_names_for_all_variants = HashSet::new();
+    for (variant_name, variant_spec) in variants {
+        let mut non_offending_names_for_variant = non_optional_names.clone();
+        let mut offending_names_for_variant = HashSet::new();
+        let cs = loop {
+            //TODO get rid of clone somehow
+            match compile_spec_internal(
+                variant_spec.clone(),
+                context,
+                &mut non_offending_names_for_variant,
+                names_used,
+            ) {
+                Ok(cs) => break Ok(cs),
+                Err(SpecCompileError::InfinitelyRecursiveTypes(offending_names)) => {
+                    offending_names.iter().for_each(|offending_name| {
+                        non_offending_names_for_variant.remove(offending_name);
+                    });
+                    offending_names.into_iter().for_each(|offending_name| {
+                        offending_names_for_variant.insert(offending_name);
+                    });
+                    variants_with_non_optional_name_errors.insert(variant_name.clone());
+                }
+                Err(e) => break Err(e),
+            }
+        }?;
+        offending_names_for_variant
+            .into_iter()
+            .for_each(|offending_name| {
+                offending_names_for_all_variants.insert(offending_name);
+            });
+        variant_to_spec.insert(variant_name.clone(), cs);
+    }
+    if variants_with_non_optional_name_errors.len() == num_variants {
+        Err(SpecCompileError::InfinitelyRecursiveTypes(
+            offending_names_for_all_variants,
+        ))
+    } else {
+        Ok(())
     }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub enum Size {
-    Variable,
-    Fixed(u64),
-    Range(SizeRange),
-    // Inclusive
-    GreaterThan(u64),
-    // Exclusive
-    LessThan(u64),
+pub struct DecimalFmt {
+    pub precision: u64,
+    pub scale: u64,
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct SizeRange {
-    pub start: u64,
-    pub end: u64,
-}
+pub struct IllegalDecimalFmt;
 
-impl Size {
-    #[inline]
-    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        match self {
-            Size::Variable => out.write_all_size(&[0]),
-            Size::Fixed(n) => combine(
-                out.write_all_size(&[1]),
-                variable_length_encode_u64(*n, out),
-            ),
-            Size::Range(r) => combine(
-                combine(
-                    out.write_all_size(&[2]),
-                    variable_length_encode_u64(r.start, out),
-                ),
-                variable_length_encode_u64(r.end, out),
-            ),
+impl DecimalFmt {
+    pub fn new(precision: u64, scale: u64) -> Result<DecimalFmt, IllegalDecimalFmt> {
+        if scale <= precision {
+            Ok(DecimalFmt { precision, scale })
+        } else {
+            Err(IllegalDecimalFmt)
         }
-    }
-
-    #[inline]
-    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<Size, SpecParsingError> {
-        match next_byte(input)? {
-            0 => Ok(Self::Variable),
-            1 => Ok(Self::Fixed(decode_u64(input)?)),
-            2 => Ok(Self::Range(SizeRange {
-                start: decode_u64(input)?,
-                end: decode_u64(input)?,
-            })),
-            b => Err(SpecParsingError::UnknownSizeFormatFlag(b)),
-        }
-    }
-}
-
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
-pub enum InterchangeBinaryFloatingPointFormat {
-    Half,
-    Single,
-    Double,
-    Quadruple,
-    Octuple,
-}
-
-impl InterchangeBinaryFloatingPointFormat {
-    pub fn significand_bits(&self) -> u64 {
-        match self {
-            InterchangeBinaryFloatingPointFormat::Half => 11,
-            InterchangeBinaryFloatingPointFormat::Single => 24,
-            InterchangeBinaryFloatingPointFormat::Double => 53,
-            InterchangeBinaryFloatingPointFormat::Quadruple => 113,
-            InterchangeBinaryFloatingPointFormat::Octuple => 237,
-        }
-    }
-
-    pub fn exponent_bits(&self) -> u64 {
-        match self {
-            InterchangeBinaryFloatingPointFormat::Half => 5,
-            InterchangeBinaryFloatingPointFormat::Single => 8,
-            InterchangeBinaryFloatingPointFormat::Double => 11,
-            InterchangeBinaryFloatingPointFormat::Quadruple => 15,
-            InterchangeBinaryFloatingPointFormat::Octuple => 19,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        match self {
-            InterchangeBinaryFloatingPointFormat::Half => out.write_all_size(&[0]),
-            InterchangeBinaryFloatingPointFormat::Single => out.write_all_size(&[1]),
-            InterchangeBinaryFloatingPointFormat::Double => out.write_all_size(&[2]),
-            InterchangeBinaryFloatingPointFormat::Quadruple => out.write_all_size(&[3]),
-            InterchangeBinaryFloatingPointFormat::Octuple => out.write_all_size(&[4]),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn decode<R: Read>(
-        input: &mut R,
-    ) -> Result<InterchangeBinaryFloatingPointFormat, SpecParsingError> {
-        Ok(match next_byte(input)? {
-            0 => InterchangeBinaryFloatingPointFormat::Half,
-            1 => InterchangeBinaryFloatingPointFormat::Single,
-            2 => InterchangeBinaryFloatingPointFormat::Double,
-            3 => InterchangeBinaryFloatingPointFormat::Quadruple,
-            4 => InterchangeBinaryFloatingPointFormat::Octuple,
-            b => return Err(SpecParsingError::UnknownBinaryFormatFlag(b)),
-        })
-    }
-}
-
-#[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
-pub enum InterchangeDecimalFloatingPointFormat {
-    Dec32,
-    Dec64,
-    Dec128,
-}
-
-impl InterchangeDecimalFloatingPointFormat {
-    pub fn significand_bits(&self) -> u64 {
-        match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => 7,
-            InterchangeDecimalFloatingPointFormat::Dec64 => 16,
-            InterchangeDecimalFloatingPointFormat::Dec128 => 34,
-        }
-    }
-
-    pub fn decimal_digits(&self) -> u64 {
-        match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => 7,
-            InterchangeDecimalFloatingPointFormat::Dec64 => 16,
-            InterchangeDecimalFloatingPointFormat::Dec128 => 34,
-        }
-    }
-
-    pub(crate) fn minimum_byes_needed(&self) -> usize {
-        match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => 2,
-            InterchangeDecimalFloatingPointFormat::Dec64 => 4,
-            InterchangeDecimalFloatingPointFormat::Dec128 => 8,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        match self {
-            InterchangeDecimalFloatingPointFormat::Dec32 => out.write_all_size(&[0]),
-            InterchangeDecimalFloatingPointFormat::Dec64 => out.write_all_size(&[1]),
-            InterchangeDecimalFloatingPointFormat::Dec128 => out.write_all_size(&[2]),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn decode<R: Read>(
-        input: &mut R,
-    ) -> Result<InterchangeDecimalFloatingPointFormat, SpecParsingError> {
-        Ok(match next_byte(input)? {
-            0 => InterchangeDecimalFloatingPointFormat::Dec32,
-            1 => InterchangeDecimalFloatingPointFormat::Dec64,
-            2 => InterchangeDecimalFloatingPointFormat::Dec128,
-            b => return Err(SpecParsingError::UnknownDecimalFormatFlag(b)),
-        })
-    }
-}
-
-#[derive(Debug, Hash, Eq, PartialEq, Clone, Default, EnumIter)]
-pub enum StringEncodingFmt {
-    #[default]
-    Utf8, //use this one, please
-    Utf16,
-    Ascii,
-}
-
-impl StringEncodingFmt {
-    #[inline]
-    pub(crate) fn encode<W: Write>(&self, out: &mut W) -> Result<usize, io::Error> {
-        match self {
-            StringEncodingFmt::Utf8 => out.write_all_size(&[0]),
-            StringEncodingFmt::Utf16 => out.write_all_size(&[1]),
-            StringEncodingFmt::Ascii => out.write_all_size(&[2]),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn decode<R: Read>(input: &mut R) -> Result<StringEncodingFmt, SpecParsingError> {
-        Ok(match next_byte(input)? {
-            0 => StringEncodingFmt::Utf8,
-            1 => StringEncodingFmt::Utf16,
-            2 => StringEncodingFmt::Ascii,
-            b => return Err(SpecParsingError::UnknownStringFormatFlag(b)),
-        })
-    }
-}
-
-pub(crate) fn combine<E>(a: Result<usize, E>, b: Result<usize, E>) -> Result<usize, E> {
-    match (a.as_ref(), b.as_ref()) {
-        (Ok(i), Ok(j)) => Ok(i + j),
-        (Err(_), _) => a,
-        (_, Err(_)) => b,
     }
 }
 
 #[cfg(test)]
 mod tests {
-
+    use super::*;
+    use crate::{spec_parsing::SpecKind, test_utils::get_all_kinds_spec};
     use strum::IntoEnumIterator;
 
-    use crate::test_utils::get_all_kinds_spec;
-
-    use super::*;
-    use std::io::Cursor;
-
     #[test]
-    fn test_serde() {
-        fn test_spec_serde(spec: Spec) {
-            assert_eq!(
-                spec,
-                Spec::read_from_bytes(&mut Cursor::new(spec.to_bytes()))
-                    .expect(format!("Unable to read {:?}", spec).as_str())
-            );
+    fn test_compile_uncompile() {
+        fn test_spec_compile_cycle(spec: ParsedSpec) {
+            let s1: ParsedSpec = spec;
+            let cs1: Spec = Spec::compile(s1.clone()).expect("Unable to compile");
+            assert_eq!(s1, cs1.to_parsed_spec());
         }
         for spec in get_all_kinds_spec() {
-            test_spec_serde(spec);
+            test_spec_compile_cycle(spec)
         }
     }
 
     #[test]
-    fn test_longform_serde() {
-        fn test_spec_longform_serde(spec: Spec) {
-            assert_eq!(
-                spec,
-                Spec::read_from_bytes(&mut Cursor::new(spec.to_longform_bytes()))
-                    .expect(format!("Unable to read {:?}", spec).as_str())
-            );
-        }
-        for spec in get_all_kinds_spec() {
-            test_spec_longform_serde(spec);
-        }
-    }
-
-    #[test]
-    fn test_write_size() {
-        fn test_spec_write_size(spec: Spec) {
-            let mut v = Vec::new();
-            let reported_size = spec
-                .write_as_bytes(&mut v)
-                .expect(format!("Unable to write to bytes. Spec: {}", stringify!($spec)).as_str());
-            assert_eq!(v.len(), reported_size);
-        }
-        for spec in get_all_kinds_spec() {
-            test_spec_write_size(spec);
-        }
-    }
-
-    #[test]
-    fn test_eof_deserialization() {
-        fn test_eof_exception(spec: Spec) {
-            let mut v = Vec::new();
-            spec.write_as_bytes(&mut v)
-                .expect(format!("Unable to write to bytes. Spec: {:?}", spec).as_str());
-            v.truncate(v.len() / 2);
-            let res: Result<Spec, SpecParsingError> = Spec::read_from_bytes(&mut Cursor::new(&v));
-            if let SpecParsingError::UnexpectedEndOfBytes =
-                res.expect_err("Unexpectedly parsed bytes to Spec")
-            {
-                assert!(true);
-            } else {
-                assert!(
-                    false,
-                    "EOF error expected for spec: {:?} with bytes {:?}",
-                    spec, v
-                );
-            }
-        }
-
-        for spec in get_all_kinds_spec() {
-            test_eof_exception(spec);
-        }
-    }
-
-    #[test]
-    fn test_spec_parsing_errors() {
-        for parsing_error_kind in SpecParsingErrorKind::iter() {
-            match parsing_error_kind {
-                SpecParsingErrorKind::ReadError => {
-                    //todo find good way to test.
-                    Vec::<Result<Spec, SpecParsingError>>::with_capacity(0)
-                }
-                SpecParsingErrorKind::UnexpectedEndOfBytes => {
-                    //covered in own test case
-                    Vec::<Result<Spec, SpecParsingError>>::with_capacity(0)
-                }
-                SpecParsingErrorKind::UnknownSpecFlag => {
-                    vec![Spec::read_from_bytes(&mut Cursor::new(&[NEVER_USED]))]
-                }
-                SpecParsingErrorKind::UnknownBinaryFormatFlag => {
-                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
-                        BINARY_FP, NEVER_USED,
-                    ]))]
-                }
-                SpecParsingErrorKind::UnknownDecimalFormatFlag => {
-                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
-                        DECIMAL_FP, NEVER_USED,
-                    ]))]
-                }
-                SpecParsingErrorKind::UnknownStringFormatFlag => {
-                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
-                        STRING, 0x00, NEVER_USED,
-                    ]))]
-                }
-                SpecParsingErrorKind::UnknownSizeFormatFlag => {
-                    vec![Spec::read_from_bytes(&mut Cursor::new(&[
-                        BYTES, NEVER_USED,
-                    ]))]
-                }
-                SpecParsingErrorKind::IntegerOverflowVariableLengthDecodingError => {
-                    vec![
-                        //way too big a size
-                        Spec::read_from_bytes(&mut Cursor::new(&[
-                            BYTES, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                            0xFF, 0xFF, 0x01,
-                        ])),
-                    ]
-                }
+    fn test_compile_error_cases_kinds() {
+        // Create a spec the compiles with every error
+        for kind in SpecCompileErrorKind::iter() {
+            match kind {
+                SpecCompileErrorKind::DuplicateName => vec![
+                    ParsedSpec::Record(vec![
+                        (
+                            "field1".into(),
+                            ParsedSpec::Name {
+                                name: "name1".into(),
+                                spec: ParsedSpec::Int(3).into(),
+                            },
+                        ),
+                        (
+                            "field2".into(),
+                            ParsedSpec::Name {
+                                name: "name1".into(),
+                                spec: ParsedSpec::BinaryFloatingPoint(
+                                    InterchangeBinaryFloatingPointFormat::Double,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                    ParsedSpec::Record(vec![
+                        (
+                            "field1".into(),
+                            ParsedSpec::Record(vec![(
+                                "inner field 1".into(),
+                                ParsedSpec::Name {
+                                    name: "name1".into(),
+                                    spec: ParsedSpec::Int(3).into(),
+                                },
+                            )]),
+                        ),
+                        (
+                            "field2".into(),
+                            ParsedSpec::Name {
+                                name: "name1".into(),
+                                spec: ParsedSpec::BinaryFloatingPoint(
+                                    InterchangeBinaryFloatingPointFormat::Double,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                ],
+                SpecCompileErrorKind::UndefinedName => vec![
+                    ParsedSpec::Ref {
+                        name: "any name here".into(),
+                    },
+                    ParsedSpec::Enum(vec![
+                        (
+                            "variant1".into(),
+                            ParsedSpec::Ref {
+                                name: "a name".into(),
+                            },
+                        ),
+                        (
+                            "variant2".into(),
+                            ParsedSpec::Name {
+                                name: "a name".into(),
+                                spec: ParsedSpec::DecimalFloatingPoint(
+                                    InterchangeDecimalFloatingPointFormat::Dec128,
+                                )
+                                .into(),
+                            },
+                        ),
+                    ]),
+                ],
+                SpecCompileErrorKind::DuplicateRecordFieldNames => vec![ParsedSpec::Record(vec![
+                    ("field name".into(), ParsedSpec::Bool),
+                    ("field name".into(), ParsedSpec::Int(5)),
+                ])],
+                SpecCompileErrorKind::DuplicateEnumVariantNames => vec![ParsedSpec::Enum(vec![
+                    ("variant name".into(), ParsedSpec::Bool),
+                    ("variant name".into(), ParsedSpec::Int(5)),
+                ])],
+                SpecCompileErrorKind::DuplicateUnionVariantSpecs => vec![
+                    ParsedSpec::Union(vec![
+                        ParsedSpec::Name {
+                            name: "name".into(),
+                            spec: ParsedSpec::Bytes(Size::Variable).into(),
+                        },
+                        ParsedSpec::Ref {
+                            name: "name".into(),
+                        },
+                    ]),
+                    ParsedSpec::Union(vec![ParsedSpec::Bool, ParsedSpec::Bool]),
+                ],
+                SpecCompileErrorKind::InfinitelyRecursiveTypes => vec![
+                    ParsedSpec::Name {
+                        name: "outer".into(),
+                        spec: ParsedSpec::Name {
+                            name: "inner".into(),
+                            spec: ParsedSpec::Enum(vec![
+                                (
+                                    "variant 1".into(),
+                                    ParsedSpec::Ref {
+                                        name: "outer".into(),
+                                    },
+                                ),
+                                (
+                                    "variant 2".into(),
+                                    ParsedSpec::Ref {
+                                        name: "inner".into(),
+                                    },
+                                ),
+                            ])
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    ParsedSpec::Name {
+                        name: "name".into(),
+                        spec: ParsedSpec::Record(vec![
+                            ("field 1".into(), ParsedSpec::Bool),
+                            (
+                                "field 2".into(),
+                                ParsedSpec::Ref {
+                                    name: "name".into(),
+                                },
+                            ),
+                        ])
+                        .into(),
+                    },
+                ],
+                SpecCompileErrorKind::IllegalDecimalFmt => vec![ParsedSpec::Decimal {
+                    precision: 3,
+                    scale: 4,
+                }],
             }
             .into_iter()
-            .map(|res| res.map_err(SpecParsingErrorKind::from))
-            .for_each(|res| match res {
-                Ok(unexpected_spec) => {
-                    assert!(false, "Unexpectedly parsed into {:?}", unexpected_spec)
+            .for_each(|s| {
+                let error = s.compile().map_err(|e| SpecCompileErrorKind::from(e));
+                match error {
+                    Ok(compiled_spec) => {
+                        panic!(
+                            "Illegal spec compiled successfully into {:?}",
+                            compiled_spec
+                        )
+                    }
+                    Err(compiled_error_kind) => {
+                        assert_eq!(kind, compiled_error_kind)
+                    }
                 }
-                Err(e) => {
-                    assert_eq!(e, parsing_error_kind, "Unexpeted Error Kind")
-                }
-            })
+            });
         }
+    }
+
+    #[test]
+    fn test_recursion() {
+        let cs = Spec::compile(ParsedSpec::Name {
+            name: "test".into(),
+            spec: Box::new(ParsedSpec::Tuple(vec![
+                ParsedSpec::Int(3),
+                ParsedSpec::Optional(Box::new(ParsedSpec::Ref {
+                    name: "test".into(),
+                })),
+            ])),
+        })
+        .unwrap();
+        if let SpecType::Name(name) = cs.spec_type() {
+            assert!(cs.named_schema().contains_key(name));
+            cs.named_schema().get(name).map(|spec| {
+                if let SpecType::Tuple(compiled_specs) = spec.spec_type() {
+                    assert_ne!(
+                        compiled_specs[1].named_schema().get("test").unwrap(),
+                        &Spec::invalid_compiled_spec()
+                    );
+                };
+            });
+        };
     }
 }

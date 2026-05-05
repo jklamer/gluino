@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Write, marker::PhantomData};
 
 use crate::{
-    spec::{
+    spec_parsing::{
         combine, InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size,
     },
     util::{variable_length_encode_u64, WriteAllReturnSize},
@@ -592,7 +592,8 @@ where
         writer: &mut W,
     ) -> Result<usize, GluinoSerializationError> {
         if let GluinoValue::ConstSet(idx) = value {
-            self.type_ser.serialize(self.const_values.get(idx as usize).ok_or(GluinoSerializationError::UnknownConstSetIndex(idx))?.clone(), writer)
+            self.const_ser.serialize(self.const_values.get(idx as usize)
+                                         .ok_or(GluinoSerializationError::UnknownConstSetIndex(idx))?.clone(), writer)
         } else {
             Err(GluinoSerializationError::ValueKindMismatch {
                 expected_value_kind: GluinoValueKind::ConstSet,
