@@ -2,9 +2,11 @@
 - [ ] Wire through const set
 - [X] Serde implementation for Open Ended Ranges
 - [ ] Change to builder implementation for Spec -> Compiled
-- [ ] Remove need for graph library by using unsafe code as needed
+- [ ] Remove need for Graph library by using unsafe code as needed
 - [ ] Test for two union variants creating one infinite loop
 - [ ] Implement unit serde
 - [ ] Create framework for arbitrary serde
-- [ ] Crete list of inexacts needed to "replace" JSON
+- [ ] Crete list of in-exacts needed to "replace" JSON
 - [ ] Remove aliases
+- [ ] Make Compile error messages better with stack context information
+- [ ] Come up with better name than required_names_direct_children

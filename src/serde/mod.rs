@@ -331,18 +331,19 @@ where
         SpecType::Name(name) => match named_unit_sers.get(name) {
             Some(ser) => Box::new(ser.clone()),
             None => {
-                let named_ser: Rc<RefCell<Box<dyn GluinoValueSer<W>>>> =
-                    Rc::new(RefCell::new(Box::new(VoidGluinoValueSer)));
-                named_unit_sers.insert(name.clone(), named_ser.clone());
-                let inner_ser = spec
-                    .named_schema()
-                    .get(name)
-                    .expect("Compiled spec should have named spec")
-                    .use_ref(|spec| {
-                        get_unit_serialization_function_internal::<W>(spec, named_unit_sers)
-                    });
-                *named_ser.borrow_mut() = inner_ser;
-                Box::new(named_ser)
+                 todo!()
+                // let named_ser: Rc<RefCell<Box<dyn GluinoValueSer<W>>>> =
+                //     Rc::new(RefCell::new(Box::new(VoidGluinoValueSer)));
+                // named_unit_sers.insert(name.clone(), named_ser.clone());
+                // let inner_ser = spec
+                //     .named_schema()
+                //     .get(name)
+                //     .expect("Compiled spec should have named spec")
+                //     .use_ref(|spec| {
+                //         get_unit_serialization_function_internal::<W>(spec, named_unit_sers)
+                //     });
+                // *named_ser.borrow_mut() = inner_ser;
+                // Box::new(named_ser)
             }
         },
         SpecType::ConstSet(const_spec, const_values) => {

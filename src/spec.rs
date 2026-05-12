@@ -1,22 +1,23 @@
+use crate::serde::GluinoValue;
 use crate::{
     fingerprint::SpecFingerprint,
     spec_parsing::{
-        InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, Size, ParsedSpec,
+        InterchangeBinaryFloatingPointFormat, InterchangeDecimalFloatingPointFormat, ParsedSpec, Size,
         StringEncodingFmt,
     },
 };
 use core::fmt::Debug;
+use std::rc::Rc;
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
 };
 use strum::{EnumDiscriminants, EnumIter};
-use crate::serde::GluinoValue;
 
 #[derive(Eq, PartialEq, Clone)]
 pub struct Spec {
     pub(crate) fingerprint: SpecFingerprint,
-    pub(crate) named_spec: HashMap<String, Spec>,
+    pub(crate) named_spec: HashMap<String, Rc<Spec>>,
     pub(crate) spec_type: SpecType,
 }
 
@@ -31,15 +32,15 @@ impl Debug for Spec {
 }
 
 impl Spec {
-    pub fn fingerprint<'a>(&'a self) -> &'a SpecFingerprint {
+    pub fn fingerprint(&self) -> &SpecFingerprint {
         &self.fingerprint
     }
 
-    pub fn spec_type<'a>(&'a self) -> &'a SpecType {
+    pub fn spec_type(&self) -> &SpecType {
         &self.spec_type
     }
 
-    pub fn named_schema<'a>(&'a self) -> &'a HashMap<String, Spec> {
+    pub fn named_schema(&self) -> &HashMap<String, Spec> {
         &self.named_spec
     }
 
@@ -189,6 +190,7 @@ impl Spec {
                     .map(|cs| Self::make_parsed_spec_internal(context, names_converted, &cs.spec_type))
                     .collect(),
             ),
+            SpecType::ConstSet(_, _) => unimplemented!(),
         }
     }
 }
@@ -230,7 +232,7 @@ pub enum SpecType {
     ConstSet(Box<Spec>, Vec<GluinoValue>),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash, EnumDiscriminants)]
+#[derive(Debug, Eq, PartialEq, Clone, EnumDiscriminants)]
 #[strum_discriminants(derive(EnumIter))]
 #[strum_discriminants(name(SpecCompileErrorKind))]
 pub enum SpecCompileError {
@@ -432,7 +434,7 @@ pub(crate) fn compile_structure_internal(
             }
         },
         ParsedSpec::ConstSet(cont_spec, values) => {
-
+            todo!()
         },
         ParsedSpec::Void => Ok(SpecType::Void),
     }
@@ -534,7 +536,7 @@ impl DecimalFmt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{spec_parsing::SpecKind, test_utils::get_all_kinds_spec};
+    use crate::test_utils::get_all_kinds_spec;
     use strum::IntoEnumIterator;
 
     #[test]
@@ -681,6 +683,7 @@ mod tests {
                     precision: 3,
                     scale: 4,
                 }],
+                SpecCompileErrorKind::InternalCompilerError => vec![], // Not possible to intentionally have spec that breaks compiler
             }
             .into_iter()
             .for_each(|s| {

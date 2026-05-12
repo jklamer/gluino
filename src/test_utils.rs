@@ -1,5 +1,5 @@
 use std::iter;
-
+use hex::FromHex;
 use strum::IntoEnumIterator;
 
 use crate::spec_parsing::{
@@ -141,6 +141,6 @@ pub(crate) fn get_valid_specs_for_kind(spec_kind: SpecKind) -> Box<dyn Iterator<
         ]))),
         SpecKind::Union => Box::new(iter::once(ParsedSpec::Union(vec![ParsedSpec::Bool, ParsedSpec::Int(4)]))),
         SpecKind::Void => Box::new(iter::once(ParsedSpec::Void)),
-        SpecKind::ConstSet => Box::new(iter::once(ParsedSpec::ConstSet(Box::new(ParsedSpec::Int(2)), Vec::new(Vec::)))),
+        SpecKind::ConstSet => Box::new(iter::once(ParsedSpec::ConstSet(Box::new(ParsedSpec::Int(2)), vec![Vec::from_hex("12").unwrap(), Vec::from_hex("34").unwrap()]))),
     }
 }

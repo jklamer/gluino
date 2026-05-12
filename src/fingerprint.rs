@@ -11,6 +11,10 @@ pub struct SpecFingerprint {
     bytes: [u8; 32],
 }
 
+pub(crate) const PLACE_HOLDER: SpecFingerprint = SpecFingerprint {
+    bytes: [0; 32],
+};
+
 impl SpecFingerprint {
     pub fn new(
         named_schema: &HashMap<String, Spec>,

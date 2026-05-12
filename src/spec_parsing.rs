@@ -455,6 +455,18 @@ impl Size {
             b => Err(SpecParsingError::UnknownSizeFormatFlag(b)),
         }
     }
+
+    /// Is the given count a possible value for the Size Spec
+    pub(crate) fn can_be<T>(&self, count: u64) -> bool
+    {
+        match self {
+            Size::Variable => true,
+            Size::Fixed(n) => n == &count,
+            Size::Range(size_range) => size_range.start <= count && count < size_range.end,
+            Size::GreaterThan(lower_bound) => lower_bound <= &count,
+            Size::LessThan(upper_bound) => &count < upper_bound,
+        }
+    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, EnumIter)]
@@ -633,7 +645,7 @@ mod tests {
         fn test_spec_longform_serde(spec: ParsedSpec) {
             assert_eq!(
                 spec,
-                ParsedSpec::read_from_bytes(&mut Cursor::new(spec.to_longform_bytes()))
+                ParsedSpec::read_from_bytes(&mut Cursor::new(spec.to_bytes()))
                     .expect(format!("Unable to read {:?}", spec).as_str())
             );
         }
